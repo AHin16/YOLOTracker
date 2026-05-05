@@ -1,0 +1,15 @@
+# Runtime dependencies for the current Bubble Tracker UI flow:
+# main.py -> bubble_tracker_ui_qt.py -> demo_yolo11.py
+
+numpy
+opencv-python
+Pillow
+loguru
+matplotlib
+scipy
+lap
+cython-bbox
+torch
+torchvision
+ultralytics
+PySide6

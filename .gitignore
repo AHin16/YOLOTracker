@@ -1,0 +1,34 @@
+# Model weights (large binary files)
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+
+# Dependencies
+.deps/
+.tmp/
+
+# Ultralytics cache
+.ultralytics/
+
+# UI state
+.bubble_tracker_ui_state.json
+
+# Image outputs
+*.png
+*.jpg
+*.jpeg
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
