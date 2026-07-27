@@ -216,8 +216,8 @@ def plot_tracking(
                 lineType=cv2.LINE_AA,
             )
 
-            if show_speed_text and speed > 0:
-                text = f"{speed:.2f} {speed_unit}/s"
+            if show_speed_text:
+                text = f"ID {obj_id}  {speed:.2f} {speed_unit}/s"
                 text_origin = (center_point[0] + 8, max(center_point[1] - 8, 18))
                 cv2.putText(
                     result,

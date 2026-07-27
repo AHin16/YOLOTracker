@@ -162,9 +162,10 @@ def box_iou(box_a, box_b):
 def match_track_masks(tlwhs, img_info, min_iou=0.1):
     mask_boxes = np.asarray(img_info.get("mask_boxes", []), dtype=np.float32)
     mask_polygons = img_info.get("mask_polygons", [])
+    mask_arrays = img_info.get("mask_arrays", [])
     aligned_masks = [{"polygon": None, "box": None, "det_index": None, "iou": 0.0} for _ in range(len(tlwhs))]
 
-    if len(tlwhs) == 0 or len(mask_boxes) == 0 or not mask_polygons:
+    if len(tlwhs) == 0 or len(mask_boxes) == 0 or (not mask_polygons and not mask_arrays):
         return aligned_masks
 
     matches = []
@@ -182,11 +183,12 @@ def match_track_masks(tlwhs, img_info, min_iou=0.1):
     for iou, track_idx, det_idx in matches:
         if iou < min_iou or track_idx in assigned_tracks or det_idx in assigned_detections:
             continue
-        if det_idx >= len(mask_polygons):
+        if det_idx >= len(mask_polygons) and det_idx >= len(mask_arrays):
             continue
 
         aligned_masks[track_idx] = {
-            "polygon": mask_polygons[det_idx],
+            "polygon": mask_polygons[det_idx] if det_idx < len(mask_polygons) else None,
+            "mask": mask_arrays[det_idx] if det_idx < len(mask_arrays) else None,
             "box": mask_boxes[det_idx],
             "det_index": det_idx,
             "iou": iou,
@@ -241,6 +243,57 @@ def compute_track_area(tlwh, polygon=None):
     return float(max(tlwh[2], 0.0) * max(tlwh[3], 0.0))
 
 
+def rasterize_polygon_mask(polygon, frame_width, frame_height):
+    if polygon is None or frame_width <= 0 or frame_height <= 0:
+        return None
+
+    points = np.asarray(polygon, dtype=np.float32)
+    if points.ndim != 2 or len(points) < 3:
+        return None
+
+    mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
+    points = np.round(points).astype(np.int32).reshape(-1, 1, 2)
+    cv2.fillPoly(mask, [points], 1, lineType=cv2.LINE_8)
+    return mask
+
+
+def compute_mask_edge_margin(mask):
+    if mask is None or mask.size == 0:
+        return None
+
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0 or len(ys) == 0:
+        return None
+
+    height, width = mask.shape[:2]
+    return float(min(np.min(xs), np.min(ys), width - 1 - np.max(xs), height - 1 - np.max(ys)))
+
+
+def is_complete_mask(mask, edge_margin):
+    if mask is None or mask.size == 0:
+        return False
+
+    margin = max(int(edge_margin), 0)
+    if margin == 0:
+        return not bool(
+            np.any(mask[0, :])
+            or np.any(mask[-1, :])
+            or np.any(mask[:, 0])
+            or np.any(mask[:, -1])
+        )
+
+    height, width = mask.shape[:2]
+    margin_y = min(margin, height)
+    margin_x = min(margin, width)
+
+    return not bool(
+        np.any(mask[:margin_y, :])
+        or np.any(mask[height - margin_y :, :])
+        or np.any(mask[:, :margin_x])
+        or np.any(mask[:, width - margin_x :])
+    )
+
+
 def compute_equivalent_diameter(area_real):
     area_real = max(float(area_real), 0.0)
     if area_real <= 0.0:
@@ -275,22 +328,33 @@ def build_frame_tracks(tlwhs, track_ids, scores, img_info, args):
     for index, tlwh in enumerate(tlwhs):
         matched = matched_masks[index] if index < len(matched_masks) else {}
         polygon = matched.get("polygon")
+        mask = rasterize_polygon_mask(polygon, frame_width, frame_height)
+        if mask is None:
+            mask = matched.get("mask")
         center = compute_track_center(tlwh, polygon=polygon)
         x1, y1, w, h = [float(value) for value in tlwh]
         x2 = x1 + max(w, 0.0)
         y2 = y1 + max(h, 0.0)
-        edge_margin_px = min(
+        bbox_edge_margin_px = min(
             x1,
             y1,
             max(frame_width - x2, 0.0),
             max(frame_height - y2, 0.0),
         ) if frame_width > 0 and frame_height > 0 else 0.0
+        mask_edge_margin_px = compute_mask_edge_margin(mask)
+        edge_margin_px = mask_edge_margin_px if mask_edge_margin_px is not None else bbox_edge_margin_px
+        passes_edge_filter = (
+            is_complete_mask(mask, getattr(args, "edge_exclusion_margin_px", 0.0))
+            if mask is not None
+            else edge_margin_px >= max(float(getattr(args, "edge_exclusion_margin_px", 0.0)), 0.0)
+        )
         frame_tracks.append(
             {
                 "track_id": int(track_ids[index]) if index < len(track_ids) else index + 1,
                 "score": float(scores[index]) if index < len(scores) else 0.0,
                 "tlwh": np.asarray(tlwh, dtype=np.float32),
                 "polygon": polygon,
+                "mask": mask,
                 "mask_box": matched.get("box"),
                 "center": center,
                 "trajectory": [],
@@ -299,6 +363,7 @@ def build_frame_tracks(tlwhs, track_ids, scores, img_info, args):
                 "speed_real_per_s": 0.0,
                 "area_px": compute_track_area(tlwh, polygon=polygon),
                 "edge_margin_px": float(edge_margin_px),
+                "passes_edge_filter": passes_edge_filter,
             }
         )
 
@@ -391,7 +456,9 @@ class MotionAnalyzer:
             is_valid = not state["invalid"]
             is_visible = is_mature and is_valid
             edge_margin_px = float(track.get("edge_margin_px", 0.0))
-            passes_edge_filter = edge_margin_px >= self.edge_exclusion_margin_px
+            passes_edge_filter = bool(
+                track.get("passes_edge_filter", edge_margin_px >= self.edge_exclusion_margin_px)
+            )
             trajectory = [item["center"] for item in list(history)[-self.trail_length:]] if is_visible else []
 
             if is_visible and state["anchor_center"] is None:
@@ -438,9 +505,12 @@ class MotionAnalyzer:
             track["cumulative_dx_real"] = cumulative_dx_real
             track["cumulative_dy_real"] = cumulative_dy_real
 
+            is_csv_sample = is_visible and passes_edge_filter and len(history) > self.speed_frame_gap
+            track["is_csv_sample"] = is_csv_sample
+
             if is_visible:
                 self.accepted_track_ids.add(track_id)
-            if is_visible and passes_edge_filter and len(history) > self.speed_frame_gap:
+            if is_csv_sample:
                 area_real = float(track.get("area_px", 0.0)) * (self.pixel_to_real_scale ** 2)
                 equivalent_diameter = compute_equivalent_diameter(area_real)
                 state["sample_count"] += 1
@@ -568,7 +638,7 @@ class MotionAnalyzer:
 
 
 def render_mask_frame(raw_img, frame_tracks, frame_id, fps, args):
-    visible_tracks = [track for track in frame_tracks if track.get("is_visible", True)]
+    visible_tracks = [track for track in frame_tracks if track.get("is_csv_sample", False)]
     return plot_tracking(
         raw_img,
         [track["tlwh"] for track in visible_tracks],

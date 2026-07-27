@@ -128,6 +128,7 @@ class PredictorYolo11:
         img_info["ratio"] = min(self.input_size[0] / image.shape[0], self.input_size[1] / image.shape[1])
         img_info["mask_boxes"] = np.empty((0, 4), dtype=np.float32)
         img_info["mask_polygons"] = []
+        img_info["mask_arrays"] = []
 
         if timer is not None:
             timer.start()
@@ -152,11 +153,21 @@ class PredictorYolo11:
             return None, img_info
 
         img_info["mask_boxes"] = result.boxes.xyxy.cpu().numpy().astype(np.float32, copy=False)
-        if result.masks is not None and getattr(result.masks, "xy", None) is not None:
-            img_info["mask_polygons"] = [
-                np.asarray(polygon, dtype=np.float32) if len(polygon) >= 3 else None
-                for polygon in result.masks.xy
-            ]
+        if result.masks is not None:
+            if getattr(result.masks, "data", None) is not None:
+                img_info["mask_arrays"] = [
+                    cv2.resize(
+                        (mask > 0.5).astype(np.uint8),
+                        (width, height),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    for mask in result.masks.data.cpu().numpy()
+                ]
+            if getattr(result.masks, "xy", None) is not None:
+                img_info["mask_polygons"] = [
+                    np.asarray(polygon, dtype=np.float32) if len(polygon) >= 3 else None
+                    for polygon in result.masks.xy
+                ]
 
         return result.boxes.data, img_info
 
