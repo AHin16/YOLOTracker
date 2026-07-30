@@ -21,9 +21,11 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSpinBox,
+    QTabWidget,
 )
 from PySide6.QtUiTools import QUiLoader
 
+from bubble_analyzer.gas_holdup_qt import GasHoldupWidget
 from demo_yolo11 import (
     DEFAULT_IMAGE_DIR,
     DEFAULT_OUTPUT_DIR,
@@ -116,16 +118,30 @@ class BubbleTrackerQt(QObject):
         self.window = loader.load(ui_file)
         ui_file.close()
 
-        self.window.installEventFilter(self)
+        tracking_page = self.window.takeCentralWidget()
+        self.workflow_tabs = QTabWidget(self.window)
+        self.workflow_tabs.setObjectName("workflowTabs")
+        self.gas_holdup_widget = GasHoldupWidget()
+        self.workflow_tabs.addTab(tracking_page, "Bubble Tracking")
+        self.workflow_tabs.addTab(self.gas_holdup_widget, "Gas Holdup")
+        self.window.setCentralWidget(self.workflow_tabs)
+        self.window.setWindowTitle("Bubble Analyzer")
 
         self.worker_thread = None
         self.worker = None
         self.preview_pixmap = None
+        self._pending_close = False
+
+        self.window.installEventFilter(self)
 
         self._connect_signals()
         self._load_persisted_state()
         self._ensure_output_paths()
         self._update_form_auto_outputs()
+        self.gas_holdup_widget.ensure_defaults(
+            self.window.modelEdit.text().strip(),
+            self.window.outputDirEdit.text().strip() or DEFAULT_OUTPUT_DIR,
+        )
 
         self.window.show()
 
@@ -134,7 +150,12 @@ class BubbleTrackerQt(QObject):
     def eventFilter(self, obj, event):
         if obj is self.window and event.type() == QEvent.Close:
             self._save_persisted_state()
-            if self.worker_thread is not None and self.worker_thread.isRunning():
+            tracker_running = self.worker_thread is not None and self.worker_thread.isRunning()
+            gas_holdup_running = self.gas_holdup_widget.is_running()
+            if tracker_running or gas_holdup_running:
+                if self._pending_close:
+                    event.ignore()
+                    return True
                 reply = QMessageBox.question(
                     self.window,
                     "Quit",
@@ -145,7 +166,13 @@ class BubbleTrackerQt(QObject):
                 if reply != QMessageBox.Yes:
                     event.ignore()
                     return True
-                self._stop_processing()
+                self._pending_close = True
+                if tracker_running:
+                    self._stop_processing()
+                if gas_holdup_running:
+                    self.gas_holdup_widget.stop_processing()
+                event.ignore()
+                return True
             event.accept()
             return True
         return False
@@ -179,6 +206,8 @@ class BubbleTrackerQt(QObject):
             sig = self._change_signal(widget)
             if sig is not None:
                 sig.connect(self._save_persisted_state)
+        self.gas_holdup_widget.state_changed.connect(self._save_persisted_state)
+        self.gas_holdup_widget.processing_finished.connect(self._close_when_workers_finish)
 
     # ---- State persistence ---------------------------------------------------
 
@@ -230,6 +259,7 @@ class BubbleTrackerQt(QObject):
             obj_name = widget.objectName()
             key = _WIDGET_TO_STATE_KEY.get(obj_name, obj_name)
             state[key] = self._widget_value(widget)
+        state["gas_holdup"] = self.gas_holdup_widget.serialize_state()
         return state
 
     def _save_persisted_state(self, *_args):
@@ -250,13 +280,17 @@ class BubbleTrackerQt(QObject):
         if not isinstance(state, dict):
             return
 
+        gas_holdup_state = state.get("gas_holdup", {})
         for key, value in state.items():
+            if key == "gas_holdup":
+                continue
             if value is None or (isinstance(value, str) and not value.strip()):
                 continue
             widget_name = _STATE_KEY_TO_WIDGET.get(key, key)
             widget = getattr(self.window, widget_name, None)
             if widget is not None:
                 self._set_widget_value(widget, value)
+        self.gas_holdup_widget.restore_state(gas_holdup_state)
 
     # ---- File panel browse handlers ------------------------------------------
 
@@ -420,7 +454,9 @@ class BubbleTrackerQt(QObject):
         self.worker_thread.started.connect(self.worker.run)
 
         self.worker.finished.connect(self.worker_thread.quit)
+        self.worker.error.connect(self.worker_thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.error.connect(self.worker.deleteLater)
         self.worker_thread.finished.connect(self.worker_thread.deleteLater)
         self.worker_thread.finished.connect(self._on_thread_finished)
 
@@ -438,6 +474,13 @@ class BubbleTrackerQt(QObject):
 
     def _on_thread_finished(self):
         self.worker_thread = None
+        self._close_when_workers_finish()
+
+    def _close_when_workers_finish(self):
+        tracker_running = self.worker_thread is not None and self.worker_thread.isRunning()
+        if self._pending_close and not tracker_running and not self.gas_holdup_widget.is_running():
+            self._pending_close = False
+            self.window.close()
 
     def _set_running(self, running):
         if running:

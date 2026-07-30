@@ -41,3 +41,46 @@ YOLOv5 的非极大值抑制（NMS）可能导致目标检测框不够稳定，�
 
 ## 更新
 项目的实际应用请关注:[PyPeriShield-周界安全系统](https://github.com/kendtank/PyPeriShield)
+
+## Bubble Analyzer 工作流
+
+运行 `main.py` 后，Qt 主窗口现在包含两个彼此独立的工作流标签：
+
+- **Bubble Tracking**：保留原有 YOLO 分割、ByteTrack/BOT-SORT、轨迹、速度和寿命分析流程。
+- **Gas Holdup**：只使用 YOLO 实例分割掩膜计算气含率，不创建跟踪器、对象 ID、轨迹或速度数据。
+
+两个工作流共用 `bubble_analyzer/inference.py` 中的 YOLO 预测器工厂，以及
+`bubble_analyzer/image_io.py` 中的图像读取逻辑。Gas Holdup 的分析、文件处理和 Qt 页面均位于
+`bubble_analyzer/` 包内，便于后续增加 SAM2、SegFormer、深度估计或 Solid Holdup 工作流。
+
+### Gas Holdup 计算
+
+Gas Holdup 使用通过最小面积和边缘策略筛选后的实例掩膜并集计算：
+
+```text
+Gas Holdup (%) = Bubble Mask Union Area / ROI Area * 100
+```
+
+面积不会使用检测框，也不会把重叠实例像素重复计数。ROI 使用 `X / Y / W / H` 指定；
+宽度或高度为 `0` 时延伸到图像对应边界。
+
+边缘气泡策略：
+
+- **Include**：保留触碰图像边界的可见分割面积。
+- **Exclude**：忽略触碰图像边界的整个实例。
+- **Weighted**：只计入图像中实际可见的分割面积。
+
+由于 Gas Holdup 页面没有物理标定参数，平均等效直径以像素为单位输出。
+
+### Gas Holdup 输出
+
+- 每个输入图像保存一张灰度底图的实例分割覆盖图，包含半透明掩膜、轮廓和关键统计值。
+- CSV 每个已处理图像一行，字段为 `Frame`、`BubbleCount`、`BubbleArea`、`ROIArea`、
+  `BubbleAreaRatio`、`GasHoldup`、`AverageDiameter`、`ProcessingTime`。
+- 为避免下次运行把旧覆盖图重新当作输入，`Output Overlay Folder` 必须位于输入文件夹之外。
+
+推荐使用项目 Conda 环境启动：
+
+```powershell
+conda run -n hkc python main.py
+```

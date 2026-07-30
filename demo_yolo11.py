@@ -13,6 +13,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from bubble_analyzer.image_io import IMAGE_EXT, get_image_list, read_image
+from bubble_analyzer.inference import create_predictor
+
 try:
     from loguru import logger
 except ImportError:
@@ -27,7 +30,6 @@ from track_utils.my_timer import MyTimer
 from visualization.visualize import plot_tracking
 
 
-IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png", ".tif", ".tiff"]
 ROOT_DIR = osp.abspath(osp.dirname(__file__))
 DESKTOP_BUBBLE_VIDEO_PATH = r"C:\Users\32956\Desktop\2026_04_13_18_42_05\png.mp4"
 SAMPLE_VIDEO_PATH = osp.join(ROOT_DIR, "data", "videos", "palace.mp4")
@@ -39,23 +41,6 @@ DEFAULT_OUTPUT_DIR = (
     else osp.join(ROOT_DIR, "visualization", "outputs")
 )
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
-
-
-def natural_key(path):
-    basename = osp.basename(path)
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", basename)]
-
-
-def create_predictor(args):
-    from detector_head.yolo11.predictor_yolo11 import PredictorYolo11
-
-    return PredictorYolo11(
-        model_path=args.model_path,
-        input_size=args.input_size,
-        conf_threshold=getattr(args, "predict_conf", 0.1),
-        iou_threshold=getattr(args, "predict_iou", 0.45),
-        device=getattr(args, "device", "auto"),
-    )
 
 
 def ensure_parent_dir(file_path):
@@ -731,63 +716,6 @@ def save_results(result_path, results):
     with open(result_path, "w", encoding="utf-8") as file:
         file.writelines(results)
     logger.info(f"save track results to {result_path}")
-
-
-def get_image_list(path):
-    if osp.isfile(path):
-        ext = osp.splitext(path)[1].lower()
-        return [path] if ext in IMAGE_EXT else []
-
-    image_names = []
-    for maindir, _, file_name_list in os.walk(path):
-        for filename in file_name_list:
-            apath = osp.join(maindir, filename)
-            ext = osp.splitext(apath)[1].lower()
-            if ext in IMAGE_EXT:
-                image_names.append(apath)
-    return sorted(image_names, key=natural_key)
-
-
-def read_image(path):
-    ext = osp.splitext(path)[1].lower()
-    is_tiff = ext in (".tif", ".tiff")
-
-    if is_tiff:
-        image = _read_tiff(path)
-        if image is not None:
-            return image
-    else:
-        image = cv2.imread(path, cv2.IMREAD_COLOR)
-        if image is not None:
-            return image
-
-    try:
-        from PIL import Image
-
-        with Image.open(path) as pil_image:
-            converted = pil_image.convert("RGB")
-            return cv2.cvtColor(np.asarray(converted), cv2.COLOR_RGB2BGR)
-    except Exception as exc:
-        logger.warning(f"Failed to read image with OpenCV/Pillow: {path} ({exc})")
-        return None
-
-
-def _read_tiff(path):
-    image = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-    if image is None:
-        return None
-
-    if image.ndim == 2 or image.shape[2] == 1:
-        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    elif image.shape[2] == 4:
-        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-
-    if image.dtype == np.uint16:
-        image = (image / 257).clip(0, 255).astype(np.uint8)
-    elif image.dtype == np.uint8 and image.ndim == 2:
-        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-
-    return image
 
 
 def infer_demo_mode(args):
