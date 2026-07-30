@@ -70,13 +70,16 @@ Gas Holdup (%) = Bubble Mask Union Area / ROI Area * 100
 - **Exclude**：忽略触碰图像边界的整个实例。
 - **Weighted**：只计入图像中实际可见的分割面积。
 
-由于 Gas Holdup 页面没有物理标定参数，平均等效直径以像素为单位输出。
+Gas Holdup 页面提供 `Calibration Pixels`、`Actual Length` 和 `Distance Unit` 三个标定参数。
+默认值为 `100 px = 1 mm`，即 `0.01 mm/px`。平均等效直径会同时保留像素值并换算为实际单位；
+气含率仍由像素面积比计算，因此不会因长度标定变化。
 
 ### Gas Holdup 输出
 
 - 每个输入图像保存一张灰度底图的实例分割覆盖图，包含半透明掩膜、轮廓和关键统计值。
 - CSV 每个已处理图像一行，字段为 `Frame`、`BubbleCount`、`BubbleArea`、`ROIArea`、
-  `BubbleAreaRatio`、`GasHoldup`、`AverageDiameter`、`ProcessingTime`。
+  `BubbleAreaRatio`、`GasHoldup`、`AverageDiameterPx`、`AverageDiameter`、`DiameterUnit`、
+  `RealUnitsPerPixel`、`ProcessingTime`。
 - 为避免下次运行把旧覆盖图重新当作输入，`Output Overlay Folder` 必须位于输入文件夹之外。
 
 推荐使用项目 Conda 环境启动：

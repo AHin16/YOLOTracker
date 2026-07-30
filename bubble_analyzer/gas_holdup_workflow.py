@@ -3,8 +3,10 @@
 
 import csv
 from dataclasses import dataclass, field
+import math
 import os
 import os.path as osp
+import re
 import time
 from typing import Callable, Optional, Tuple
 
@@ -23,7 +25,10 @@ CSV_COLUMNS = (
     "ROIArea",
     "BubbleAreaRatio",
     "GasHoldup",
+    "AverageDiameterPx",
     "AverageDiameter",
+    "DiameterUnit",
+    "RealUnitsPerPixel",
     "ProcessingTime",
 )
 
@@ -38,6 +43,9 @@ class GasHoldupConfig:
     min_bubble_area: int = 10
     roi: ROI = field(default_factory=ROI)
     edge_policy: EdgeBubblePolicy = EdgeBubblePolicy.INCLUDE
+    calibration_pixels: float = 100.0
+    calibration_length: float = 1.0
+    distance_unit: str = "mm"
     input_size: Tuple[int, int] = (640, 640)
     predict_iou: float = 0.45
     device: str = "auto"
@@ -45,6 +53,23 @@ class GasHoldupConfig:
     @property
     def predict_conf(self):
         return self.confidence_threshold
+
+    @property
+    def real_units_per_pixel(self):
+        calibration_pixels = float(self.calibration_pixels)
+        calibration_length = float(self.calibration_length)
+        if not math.isfinite(calibration_pixels) or calibration_pixels <= 0:
+            raise ValueError("Calibration Pixels must be greater than 0.")
+        if not math.isfinite(calibration_length) or calibration_length <= 0:
+            raise ValueError("Calibration Length must be greater than 0.")
+        return calibration_length / calibration_pixels
+
+    @property
+    def normalized_distance_unit(self):
+        unit = str(self.distance_unit).strip()
+        if re.fullmatch(r"[A-Za-zµμ]{1,12}", unit) is None:
+            raise ValueError("Distance Unit must contain 1-12 letters, such as mm or µm.")
+        return unit
 
 
 def _extract_masks(image_info, frame_shape):
@@ -73,7 +98,12 @@ def _extract_masks(image_info, frame_shape):
     return masks
 
 
-def render_gas_holdup_overlay(frame, result: GasHoldupResult):
+def render_gas_holdup_overlay(
+    frame,
+    result: GasHoldupResult,
+    average_diameter,
+    distance_unit,
+):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     rendered = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     palette = (
@@ -101,7 +131,8 @@ def render_gas_holdup_overlay(frame, result: GasHoldupResult):
         f"Gas Holdup : {result.gas_holdup:.2f} %",
         f"Bubble Count : {result.bubble_count}",
         f"Bubble Area : {result.bubble_area} px",
-        f"Average Diameter : {result.average_diameter:.2f} px",
+        f"Average Diameter : {average_diameter:.4f} {distance_unit}",
+        f"Pixel Diameter : {result.average_diameter:.2f} px",
     )
     text_height = 22 * len(lines) + 12
     panel_width = min(max(frame.shape[1] - 12, 1), 390)
@@ -120,7 +151,14 @@ def render_gas_holdup_overlay(frame, result: GasHoldupResult):
     return rendered
 
 
-def _csv_row(frame_id, result, processing_time):
+def _csv_row(
+    frame_id,
+    result,
+    average_diameter,
+    distance_unit,
+    real_units_per_pixel,
+    processing_time,
+):
     return {
         "Frame": frame_id,
         "BubbleCount": result.bubble_count,
@@ -128,7 +166,10 @@ def _csv_row(frame_id, result, processing_time):
         "ROIArea": result.roi_area,
         "BubbleAreaRatio": f"{result.bubble_area_ratio:.6f}",
         "GasHoldup": f"{result.gas_holdup:.6f}",
-        "AverageDiameter": f"{result.average_diameter:.6f}",
+        "AverageDiameterPx": f"{result.average_diameter:.6f}",
+        "AverageDiameter": f"{average_diameter:.6f}",
+        "DiameterUnit": distance_unit,
+        "RealUnitsPerPixel": f"{real_units_per_pixel:.9f}",
         "ProcessingTime": f"{processing_time:.6f}",
     }
 
@@ -151,6 +192,8 @@ def run_gas_holdup(
         raise ValueError("Confidence Threshold must be between 0 and 1.")
     if int(config.min_bubble_area) < 0:
         raise ValueError("Minimum Bubble Area must not be negative.")
+    real_units_per_pixel = config.real_units_per_pixel
+    distance_unit = config.normalized_distance_unit
 
     image_paths = get_image_list(config.input_folder)
     if not image_paths:
@@ -187,14 +230,29 @@ def run_gas_holdup(
                 roi=config.roi,
                 edge_policy=config.edge_policy,
             )
-            overlay = render_gas_holdup_overlay(frame, result)
+            average_diameter = result.average_diameter * real_units_per_pixel
+            overlay = render_gas_holdup_overlay(
+                frame,
+                result,
+                average_diameter,
+                distance_unit,
+            )
             overlay_name = f"{frame_index + 1:06d}_{osp.splitext(osp.basename(image_path))[0]}.png"
             overlay_path = osp.join(config.output_overlay_folder, overlay_name)
             if not write_image(overlay_path, overlay):
                 raise OSError(f"Cannot save overlay image: {overlay_path}")
 
             processing_time = time.perf_counter() - started_at
-            writer.writerow(_csv_row(frame_index + 1, result, processing_time))
+            writer.writerow(
+                _csv_row(
+                    frame_index + 1,
+                    result,
+                    average_diameter,
+                    distance_unit,
+                    real_units_per_pixel,
+                    processing_time,
+                )
+            )
             csv_file.flush()
             processed_frames += 1
 
@@ -211,7 +269,10 @@ def run_gas_holdup(
                             "roi_area": result.roi_area,
                             "bubble_area_ratio": result.bubble_area_ratio,
                             "gas_holdup": result.gas_holdup,
-                            "average_diameter": result.average_diameter,
+                            "average_diameter_px": result.average_diameter,
+                            "average_diameter": average_diameter,
+                            "distance_unit": distance_unit,
+                            "real_units_per_pixel": real_units_per_pixel,
                             "processing_time": processing_time,
                             "fps": 1.0 / max(processing_time, 1e-9),
                         },

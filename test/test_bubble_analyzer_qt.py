@@ -44,11 +44,41 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
                 controller = bubble_tracker_ui_qt.BubbleTrackerQt()
 
             controller.gas_holdup_widget.confidence_spin.setValue(0.25)
+            controller.gas_holdup_widget.calibration_pixels_spin.setValue(100.0)
+            controller.gas_holdup_widget.calibration_length_spin.setValue(1.0)
+            controller.gas_holdup_widget.distance_unit_edit.setText("mm")
             state = controller._serialize_state()
 
             self.assertIn("gas_holdup", state)
             self.assertEqual(state["gas_holdup"]["confidence_threshold"], 0.25)
+            self.assertEqual(state["gas_holdup"]["calibration_pixels"], 100.0)
+            self.assertEqual(state["gas_holdup"]["calibration_length"], 1.0)
+            self.assertEqual(state["gas_holdup"]["distance_unit"], "mm")
             self.assertIn("tracker_type", state)
+            controller.window.close()
+
+    def test_displays_actual_and_pixel_diameter_results(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "ui-state.json")
+            with patch.object(bubble_tracker_ui_qt, "UI_STATE_PATH", state_path), patch.object(
+                QMainWindow, "show"
+            ):
+                controller = bubble_tracker_ui_qt.BubbleTrackerQt()
+
+            controller.gas_holdup_widget._handle_progress(
+                {
+                    "frame_id": 1,
+                    "total_frames": 1,
+                    "current_frame": "frame.png",
+                    "metrics": {
+                        "average_diameter": 0.1234,
+                        "average_diameter_px": 12.34,
+                        "distance_unit": "mm",
+                    },
+                }
+            )
+            self.assertEqual(controller.gas_holdup_widget.average_diameter_value.text(), "0.1234 mm")
+            self.assertEqual(controller.gas_holdup_widget.average_diameter_px_value.text(), "12.34 px")
             controller.window.close()
 
     def test_restores_gas_holdup_state_without_changing_tracking_keys(self):
@@ -68,6 +98,9 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
                     "roi_width": 300,
                     "roi_height": 400,
                     "edge_bubble_policy": "exclude",
+                    "calibration_pixels": 200.0,
+                    "calibration_length": 2.0,
+                    "distance_unit": "mm",
                 }
             )
             gas_state = controller._serialize_state()["gas_holdup"]
@@ -76,6 +109,9 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
             self.assertEqual(gas_state["minimum_bubble_area"], 25)
             self.assertEqual(gas_state["roi_width"], 300)
             self.assertEqual(gas_state["edge_bubble_policy"], "exclude")
+            self.assertEqual(gas_state["calibration_pixels"], 200.0)
+            self.assertEqual(gas_state["calibration_length"], 2.0)
+            self.assertEqual(gas_state["distance_unit"], "mm")
             controller.window.close()
 
     def test_legacy_tracking_state_seeds_new_workflow_defaults(self):

@@ -163,6 +163,23 @@ class GasHoldupWidget(QWidget):
         self.min_area_spin = QSpinBox()
         self.min_area_spin.setRange(1, 100000000)
         self.min_area_spin.setValue(10)
+        self.calibration_pixels_spin = QDoubleSpinBox()
+        self.calibration_pixels_spin.setRange(0.001, 1000000000.0)
+        self.calibration_pixels_spin.setDecimals(3)
+        self.calibration_pixels_spin.setValue(100.0)
+        self.calibration_pixels_spin.setSuffix(" px")
+        self.calibration_pixels_spin.setToolTip(
+            "Pixel length corresponding to the calibrated actual length."
+        )
+        self.calibration_length_spin = QDoubleSpinBox()
+        self.calibration_length_spin.setRange(0.000001, 1000000000.0)
+        self.calibration_length_spin.setDecimals(6)
+        self.calibration_length_spin.setValue(1.0)
+        self.calibration_length_spin.setToolTip(
+            "Actual length corresponding to Calibration Pixels."
+        )
+        self.distance_unit_edit = QLineEdit("mm")
+        self.distance_unit_edit.setToolTip("Unit used for the calibrated bubble diameter.")
         self.edge_policy_combo = QComboBox()
         for label, policy in (
             ("Include", EdgeBubblePolicy.INCLUDE),
@@ -192,6 +209,9 @@ class GasHoldupWidget(QWidget):
 
         self._add_form_row(form, "Confidence Threshold", self.confidence_spin)
         self._add_form_row(form, "Minimum Bubble Area (px)", self.min_area_spin)
+        self._add_form_row(form, "Calibration Pixels", self.calibration_pixels_spin)
+        self._add_form_row(form, "Actual Length", self.calibration_length_spin)
+        self._add_form_row(form, "Distance Unit", self.distance_unit_edit)
         self._add_form_row(form, "ROI (0 size = frame edge)", roi_widget)
         self._add_form_row(form, "Edge Bubble Policy", self.edge_policy_combo)
         return group
@@ -225,7 +245,8 @@ class GasHoldupWidget(QWidget):
         self.roi_area_value = QLabel("0 px")
         self.area_ratio_value = QLabel("0.00 %")
         self.gas_holdup_value = QLabel("0.00 %")
-        self.average_diameter_value = QLabel("0.00 px")
+        self.average_diameter_value = QLabel("0.0000 mm")
+        self.average_diameter_px_value = QLabel("0.00 px")
         self.processing_fps_value = QLabel("--")
         for label, widget in (
             ("Current Frame", self.current_frame_value),
@@ -235,6 +256,7 @@ class GasHoldupWidget(QWidget):
             ("Bubble Area Ratio", self.area_ratio_value),
             ("Gas Holdup", self.gas_holdup_value),
             ("Average Bubble Diameter", self.average_diameter_value),
+            ("Average Bubble Diameter (px)", self.average_diameter_px_value),
             ("Processing FPS", self.processing_fps_value),
         ):
             form.addRow(label, widget)
@@ -279,6 +301,9 @@ class GasHoldupWidget(QWidget):
             self.output_csv_edit,
             self.confidence_spin,
             self.min_area_spin,
+            self.calibration_pixels_spin,
+            self.calibration_length_spin,
+            self.distance_unit_edit,
             self.roi_x_spin,
             self.roi_y_spin,
             self.roi_width_spin,
@@ -294,6 +319,9 @@ class GasHoldupWidget(QWidget):
             "output_csv": self.output_csv_edit.text(),
             "confidence_threshold": self.confidence_spin.value(),
             "minimum_bubble_area": self.min_area_spin.value(),
+            "calibration_pixels": self.calibration_pixels_spin.value(),
+            "calibration_length": self.calibration_length_spin.value(),
+            "distance_unit": self.distance_unit_edit.text(),
             "roi_x": self.roi_x_spin.value(),
             "roi_y": self.roi_y_spin.value(),
             "roi_width": self.roi_width_spin.value(),
@@ -309,10 +337,13 @@ class GasHoldupWidget(QWidget):
             "input_folder": self.input_folder_edit,
             "output_overlay_folder": self.overlay_folder_edit,
             "output_csv": self.output_csv_edit,
+            "distance_unit": self.distance_unit_edit,
         }
         spin_fields = {
             "confidence_threshold": self.confidence_spin,
             "minimum_bubble_area": self.min_area_spin,
+            "calibration_pixels": self.calibration_pixels_spin,
+            "calibration_length": self.calibration_length_spin,
             "roi_x": self.roi_x_spin,
             "roi_y": self.roi_y_spin,
             "roi_width": self.roi_width_spin,
@@ -395,13 +426,16 @@ class GasHoldupWidget(QWidget):
             raise ValueError("Output Overlay Folder is required.")
         if not output_csv:
             raise ValueError("Output CSV is required.")
-        return GasHoldupConfig(
+        config = GasHoldupConfig(
             model_path=model_path,
             input_folder=input_folder,
             output_overlay_folder=overlay_folder,
             output_csv=output_csv,
             confidence_threshold=self.confidence_spin.value(),
             min_bubble_area=self.min_area_spin.value(),
+            calibration_pixels=self.calibration_pixels_spin.value(),
+            calibration_length=self.calibration_length_spin.value(),
+            distance_unit=self.distance_unit_edit.text().strip(),
             roi=ROI(
                 x=self.roi_x_spin.value(),
                 y=self.roi_y_spin.value(),
@@ -410,6 +444,9 @@ class GasHoldupWidget(QWidget):
             ),
             edge_policy=EdgeBubblePolicy.from_value(self.edge_policy_combo.currentData()),
         )
+        config.real_units_per_pixel
+        config.normalized_distance_unit
+        return config
 
     def start_processing(self):
         if self.is_running():
@@ -465,7 +502,13 @@ class GasHoldupWidget(QWidget):
         self.roi_area_value.setText(f"{metrics.get('roi_area', 0)} px")
         self.area_ratio_value.setText(f"{metrics.get('bubble_area_ratio', 0.0):.2f} %")
         self.gas_holdup_value.setText(f"{metrics.get('gas_holdup', 0.0):.2f} %")
-        self.average_diameter_value.setText(f"{metrics.get('average_diameter', 0.0):.2f} px")
+        distance_unit = metrics.get("distance_unit", "unit")
+        self.average_diameter_value.setText(
+            f"{metrics.get('average_diameter', 0.0):.4f} {distance_unit}"
+        )
+        self.average_diameter_px_value.setText(
+            f"{metrics.get('average_diameter_px', 0.0):.2f} px"
+        )
         self.processing_fps_value.setText(f"{metrics.get('fps', 0.0):.2f}")
         self.progress_bar.setMaximum(max(total_frames, 1))
         self.progress_bar.setValue(frame_id)
