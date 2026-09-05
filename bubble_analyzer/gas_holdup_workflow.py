@@ -47,6 +47,7 @@ class GasHoldupConfig:
     calibration_length: float = 1.0
     distance_unit: str = "mm"
     input_size: Tuple[int, int] = (640, 640)
+    high_quality_segmentation: bool = False
     predict_iou: float = 0.45
     device: str = "auto"
 

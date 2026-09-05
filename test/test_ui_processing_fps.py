@@ -6,7 +6,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from ui_formatters import format_processing_fps
+from ui_formatters import format_frame_latency_ms, format_processing_fps
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -20,6 +20,13 @@ class ProcessingFpsUiTest(unittest.TestCase):
         self.assertEqual(format_processing_fps(None), "Processing FPS: --")
         self.assertEqual(format_processing_fps(math.nan), "Processing FPS: --")
 
+    def test_formats_frame_latency_for_display(self):
+        self.assertEqual(format_frame_latency_ms(12.345), "Frame Latency: 12.35 ms")
+
+    def test_uses_placeholder_when_frame_latency_is_unavailable(self):
+        self.assertEqual(format_frame_latency_ms(None), "Frame Latency: --")
+        self.assertEqual(format_frame_latency_ms(math.nan), "Frame Latency: --")
+
     def test_places_processing_fps_beside_progress_bar(self):
         root = ET.parse(ROOT_DIR / "bubble_tracker_ui.ui").getroot()
         progress_layout = root.find(".//layout[@name='progressLayout']")
@@ -30,7 +37,10 @@ class ProcessingFpsUiTest(unittest.TestCase):
             for item in progress_layout.findall("item")
             if item.find("widget") is not None
         ]
-        self.assertEqual(widget_names, ["progressBar", "processingFpsLabel"])
+        self.assertEqual(
+            widget_names,
+            ["progressBar", "processingFpsLabel", "frameLatencyLabel"],
+        )
 
 
 if __name__ == "__main__":

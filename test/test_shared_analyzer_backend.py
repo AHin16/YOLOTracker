@@ -38,6 +38,7 @@ class SharedPredictorFactoryTest(unittest.TestCase):
         args = SimpleNamespace(
             model_path="bubble.pt",
             input_size=(512, 768),
+            high_quality_segmentation=True,
             predict_conf=0.2,
             predict_iou=0.4,
             device="cpu",
@@ -52,6 +53,7 @@ class SharedPredictorFactoryTest(unittest.TestCase):
             {
                 "model_path": "bubble.pt",
                 "input_size": (512, 768),
+                "high_quality_segmentation": True,
                 "conf_threshold": 0.2,
                 "iou_threshold": 0.4,
                 "device": "cpu",

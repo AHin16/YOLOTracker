@@ -9,6 +9,7 @@ import cv2
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -111,6 +112,7 @@ class GasHoldupWidget(QWidget):
         left_layout.setContentsMargins(4, 4, 8, 4)
         left_layout.addWidget(self._build_files_group())
         left_layout.addWidget(self._build_parameters_group())
+        left_layout.addWidget(self._build_quality_group())
         left_layout.addWidget(self._build_actions_group())
         left_layout.addStretch(1)
         scroll.setWidget(left_panel)
@@ -216,6 +218,48 @@ class GasHoldupWidget(QWidget):
         self._add_form_row(form, "Edge Bubble Policy", self.edge_policy_combo)
         return group
 
+    def _build_quality_group(self):
+        group = QGroupBox("Segmentation Quality")
+        layout = QVBoxLayout(group)
+        self.high_quality_check = QCheckBox("Enable high-quality segmentation")
+        self.high_quality_check.setToolTip(
+            "Enable retina masks and apply the selected inference resolution."
+        )
+        layout.addWidget(self.high_quality_check)
+
+        resolution_widget = QWidget()
+        resolution_layout = QHBoxLayout(resolution_widget)
+        resolution_layout.setContentsMargins(0, 0, 0, 0)
+        resolution_layout.setSpacing(8)
+        self.input_width_spin = QSpinBox()
+        self.input_width_spin.setRange(32, 8192)
+        self.input_width_spin.setSingleStep(32)
+        self.input_width_spin.setValue(640)
+        self.input_width_spin.setSuffix(" px")
+        self.input_height_spin = QSpinBox()
+        self.input_height_spin.setRange(32, 8192)
+        self.input_height_spin.setSingleStep(32)
+        self.input_height_spin.setValue(640)
+        self.input_height_spin.setSuffix(" px")
+        resolution_layout.addWidget(QLabel("W"))
+        resolution_layout.addWidget(self.input_width_spin, 1)
+        resolution_layout.addWidget(QLabel("×"))
+        resolution_layout.addWidget(QLabel("H"))
+        resolution_layout.addWidget(self.input_height_spin, 1)
+
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        form.addRow("Inference Resolution", resolution_widget)
+        layout.addLayout(form)
+        hint = QLabel(
+            "When disabled, processing remains compatible with the legacy mask path. "
+            "Higher resolutions improve detail but require more GPU memory and time."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self._update_quality_controls(False)
+        return group
+
     def _build_actions_group(self):
         group = QGroupBox("Processing")
         layout = QVBoxLayout(group)
@@ -282,6 +326,7 @@ class GasHoldupWidget(QWidget):
         self.overlay_field.button.clicked.connect(self._browse_overlay_folder)
         self.csv_field.button.clicked.connect(self._browse_output_csv)
         self.input_folder_edit.textChanged.connect(self._update_auto_outputs)
+        self.high_quality_check.toggled.connect(self._update_quality_controls)
         self.start_button.clicked.connect(self.start_processing)
         self.stop_button.clicked.connect(self.stop_processing)
         for widget in self._state_widgets():
@@ -290,6 +335,8 @@ class GasHoldupWidget(QWidget):
                 signal = widget.valueChanged
             elif isinstance(widget, QComboBox):
                 signal = widget.currentIndexChanged
+            elif isinstance(widget, QCheckBox):
+                signal = widget.toggled
             if signal is not None:
                 signal.connect(lambda *_args: self.state_changed.emit())
 
@@ -309,7 +356,14 @@ class GasHoldupWidget(QWidget):
             self.roi_width_spin,
             self.roi_height_spin,
             self.edge_policy_combo,
+            self.high_quality_check,
+            self.input_width_spin,
+            self.input_height_spin,
         )
+
+    def _update_quality_controls(self, enabled):
+        self.input_width_spin.setEnabled(bool(enabled))
+        self.input_height_spin.setEnabled(bool(enabled))
 
     def serialize_state(self):
         return {
@@ -327,6 +381,9 @@ class GasHoldupWidget(QWidget):
             "roi_width": self.roi_width_spin.value(),
             "roi_height": self.roi_height_spin.value(),
             "edge_bubble_policy": self.edge_policy_combo.currentData(),
+            "high_quality_segmentation": self.high_quality_check.isChecked(),
+            "input_width": self.input_width_spin.value(),
+            "input_height": self.input_height_spin.value(),
         }
 
     def restore_state(self, state):
@@ -348,6 +405,8 @@ class GasHoldupWidget(QWidget):
             "roi_y": self.roi_y_spin,
             "roi_width": self.roi_width_spin,
             "roi_height": self.roi_height_spin,
+            "input_width": self.input_width_spin,
+            "input_height": self.input_height_spin,
         }
         for key, widget in text_fields.items():
             value = state.get(key)
@@ -360,6 +419,7 @@ class GasHoldupWidget(QWidget):
         index = self.edge_policy_combo.findData(policy)
         if index >= 0:
             self.edge_policy_combo.setCurrentIndex(index)
+        self.high_quality_check.setChecked(bool(state.get("high_quality_segmentation", False)))
 
     def ensure_defaults(self, model_path="", output_dir=""):
         if model_path and not self.model_edit.text().strip():
@@ -443,6 +503,8 @@ class GasHoldupWidget(QWidget):
                 height=self.roi_height_spin.value(),
             ),
             edge_policy=EdgeBubblePolicy.from_value(self.edge_policy_combo.currentData()),
+            input_size=(self.input_height_spin.value(), self.input_width_spin.value()),
+            high_quality_segmentation=self.high_quality_check.isChecked(),
         )
         config.real_units_per_pixel
         config.normalized_distance_unit

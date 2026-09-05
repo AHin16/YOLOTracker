@@ -109,12 +109,21 @@ def _validate_device(device):
 
 
 class PredictorYolo11:
-    def __init__(self, model_path, input_size=(640, 640), conf_threshold=0.1, iou_threshold=0.45, device="auto"):
+    def __init__(
+        self,
+        model_path,
+        input_size=(640, 640),
+        conf_threshold=0.1,
+        iou_threshold=0.45,
+        device="auto",
+        high_quality_segmentation=False,
+    ):
         _ensure_custom_addmodules()
         self.device = _normalize_device(device)
         _validate_device(self.device)
         self.model = YOLO(model_path)
         self.input_size = input_size
+        self.high_quality_segmentation = bool(high_quality_segmentation)
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
         self.task = "segment" if getattr(self.model, "task", None) == "segment" else "detect"
@@ -140,6 +149,9 @@ class PredictorYolo11:
             "iou": self.iou_threshold,
             "verbose": False,
         }
+        if self.high_quality_segmentation:
+            predict_kwargs["imgsz"] = self.input_size
+            predict_kwargs["retina_masks"] = True
         if self.device is not None:
             predict_kwargs["device"] = self.device
 
@@ -155,14 +167,26 @@ class PredictorYolo11:
         img_info["mask_boxes"] = result.boxes.xyxy.cpu().numpy().astype(np.float32, copy=False)
         if result.masks is not None:
             if getattr(result.masks, "data", None) is not None:
-                img_info["mask_arrays"] = [
-                    cv2.resize(
-                        (mask > 0.5).astype(np.uint8),
-                        (width, height),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    for mask in result.masks.data.cpu().numpy()
-                ]
+                mask_arrays = []
+                for source_mask in result.masks.data.cpu().numpy():
+                    if self.high_quality_segmentation:
+                        mask = source_mask.astype(np.float32, copy=False)
+                        if mask.shape[:2] != (height, width):
+                            mask = cv2.resize(
+                                mask,
+                                (width, height),
+                                interpolation=cv2.INTER_LINEAR,
+                            )
+                        mask_arrays.append((mask > 0.5).astype(np.uint8))
+                    else:
+                        mask_arrays.append(
+                            cv2.resize(
+                                (source_mask > 0.5).astype(np.uint8),
+                                (width, height),
+                                interpolation=cv2.INTER_NEAREST,
+                            )
+                        )
+                img_info["mask_arrays"] = mask_arrays
             if getattr(result.masks, "xy", None) is not None:
                 img_info["mask_polygons"] = [
                     np.asarray(polygon, dtype=np.float32) if len(polygon) >= 3 else None

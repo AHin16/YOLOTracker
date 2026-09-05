@@ -659,7 +659,7 @@ def process_frame(frame, predictor, tracker, timer, args, frame_id, results, mot
     outputs, img_info = predictor.predict(frame, timer)
 
     if outputs is None:
-        timer.stop()
+        frame_latency_ms = timer.stop(average=False) * 1000.0
         frame_tracks = []
         frame_metrics = (
             motion_analyzer.update(frame_id + 1, frame_tracks)
@@ -667,6 +667,7 @@ def process_frame(frame, predictor, tracker, timer, args, frame_id, results, mot
             else build_default_metrics(frame_id + 1, 0.0, getattr(args, "distance_unit", "unit"))
         )
         frame_metrics["fps"] = 0.0
+        frame_metrics["frame_latency_ms"] = frame_latency_ms
 
         return (
             render_mask_frame(img_info["raw_img"], frame_tracks, frame_id, 0.0, args),
@@ -688,7 +689,7 @@ def process_frame(frame, predictor, tracker, timer, args, frame_id, results, mot
         )
 
     online_tlwhs, online_ids, online_scores = collect_tracks(online_targets, args, frame_id, results)
-    timer.stop()
+    frame_latency_ms = timer.stop(average=False) * 1000.0
 
     frame_tracks = build_frame_tracks(online_tlwhs, online_ids, online_scores, img_info, args)
     frame_metrics = (
@@ -697,6 +698,7 @@ def process_frame(frame, predictor, tracker, timer, args, frame_id, results, mot
         else build_default_metrics(frame_id + 1, 0.0, getattr(args, "distance_unit", "unit"))
     )
     frame_metrics["fps"] = 1.0 / max(1e-5, timer.average_time)
+    frame_metrics["frame_latency_ms"] = frame_latency_ms
 
     return (
         render_mask_frame(

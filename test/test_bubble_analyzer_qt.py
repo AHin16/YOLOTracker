@@ -47,6 +47,9 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
             controller.gas_holdup_widget.calibration_pixels_spin.setValue(100.0)
             controller.gas_holdup_widget.calibration_length_spin.setValue(1.0)
             controller.gas_holdup_widget.distance_unit_edit.setText("mm")
+            controller.gas_holdup_widget.high_quality_check.setChecked(True)
+            controller.gas_holdup_widget.input_width_spin.setValue(1280)
+            controller.gas_holdup_widget.input_height_spin.setValue(720)
             state = controller._serialize_state()
 
             self.assertIn("gas_holdup", state)
@@ -54,7 +57,43 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
             self.assertEqual(state["gas_holdup"]["calibration_pixels"], 100.0)
             self.assertEqual(state["gas_holdup"]["calibration_length"], 1.0)
             self.assertEqual(state["gas_holdup"]["distance_unit"], "mm")
+            self.assertTrue(state["gas_holdup"]["high_quality_segmentation"])
+            self.assertEqual(state["gas_holdup"]["input_width"], 1280)
+            self.assertEqual(state["gas_holdup"]["input_height"], 720)
             self.assertIn("tracker_type", state)
+            controller.window.close()
+
+    def test_high_quality_controls_are_opt_in(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "ui-state.json")
+            with patch.object(bubble_tracker_ui_qt, "UI_STATE_PATH", state_path), patch.object(
+                QMainWindow, "show"
+            ):
+                controller = bubble_tracker_ui_qt.BubbleTrackerQt()
+
+            widget = controller.gas_holdup_widget
+            self.assertFalse(widget.high_quality_check.isChecked())
+            self.assertFalse(widget.input_width_spin.isEnabled())
+            self.assertFalse(widget.input_height_spin.isEnabled())
+
+            widget.high_quality_check.setChecked(True)
+            widget.input_width_spin.setValue(1280)
+            widget.input_height_spin.setValue(720)
+
+            model_path = os.path.join(temp_dir, "model.pt")
+            input_dir = os.path.join(temp_dir, "input")
+            open(model_path, "wb").close()
+            os.mkdir(input_dir)
+            widget.model_edit.setText(model_path)
+            widget.input_folder_edit.setText(input_dir)
+            widget.overlay_folder_edit.setText(os.path.join(temp_dir, "overlay"))
+            widget.output_csv_edit.setText(os.path.join(temp_dir, "results.csv"))
+            config = widget._build_config()
+
+            self.assertTrue(widget.input_width_spin.isEnabled())
+            self.assertTrue(widget.input_height_spin.isEnabled())
+            self.assertTrue(config.high_quality_segmentation)
+            self.assertEqual(config.input_size, (720, 1280))
             controller.window.close()
 
     def test_displays_actual_and_pixel_diameter_results(self):
@@ -101,6 +140,9 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
                     "calibration_pixels": 200.0,
                     "calibration_length": 2.0,
                     "distance_unit": "mm",
+                    "high_quality_segmentation": True,
+                    "input_width": 1024,
+                    "input_height": 768,
                 }
             )
             gas_state = controller._serialize_state()["gas_holdup"]
@@ -112,6 +154,9 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
             self.assertEqual(gas_state["calibration_pixels"], 200.0)
             self.assertEqual(gas_state["calibration_length"], 2.0)
             self.assertEqual(gas_state["distance_unit"], "mm")
+            self.assertTrue(gas_state["high_quality_segmentation"])
+            self.assertEqual(gas_state["input_width"], 1024)
+            self.assertEqual(gas_state["input_height"], 768)
             controller.window.close()
 
     def test_legacy_tracking_state_seeds_new_workflow_defaults(self):

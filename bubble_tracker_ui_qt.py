@@ -33,7 +33,7 @@ from demo_yolo11 import (
     Args,
     main as run_tracker,
 )
-from ui_formatters import format_processing_fps
+from ui_formatters import format_frame_latency_ms, format_processing_fps
 
 ROOT_DIR = osp.abspath(osp.dirname(__file__))
 UI_STATE_PATH = osp.join(ROOT_DIR, ".bubble_tracker_ui_state.json")
@@ -488,6 +488,7 @@ class BubbleTrackerQt(QObject):
             self.window.stopBtn.setEnabled(True)
             self.window.statusLabel.setText("Processing...")
             self.window.processingFpsLabel.setText(format_processing_fps(None))
+            self.window.frameLatencyLabel.setText(format_frame_latency_ms(None))
         else:
             self.window.startBtn.setEnabled(True)
             self.window.stopBtn.setEnabled(False)
@@ -511,6 +512,7 @@ class BubbleTrackerQt(QObject):
         w.uniqueTracksValue.setText(str(metrics.get("unique_tracks", 0)))
         w.csvSamplesValue.setText(str(metrics.get("samples_written", 0)))
         w.processingFpsLabel.setText(format_processing_fps(metrics.get("fps")))
+        w.frameLatencyLabel.setText(format_frame_latency_ms(metrics.get("frame_latency_ms")))
 
         if total_frames:
             w.progressBar.setMaximum(total_frames)
