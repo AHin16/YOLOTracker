@@ -1,10 +1,16 @@
 # Model weights (large binary files)
 *.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
+.ipynb_checkpoints/
 
 # IDE
 .idea/
@@ -19,10 +25,20 @@ __pycache__/
 # UI state
 .bubble_tracker_ui_state.json
 
-# Image outputs
-*.png
-*.jpg
-*.jpeg
+# Local datasets and demo media
+/data/videos/
+/BoT-SORT/assets/*.mov
+
+# Generated visualization results
+/visualization/outputs/
+gas_holdup_overlays/
+*_gas_holdup_overlays/
+*_gas_holdup.csv
+
+# Training outputs and logs
+/runs/
+/wandb/
+*.log
 
 # Virtual env
 venv/
