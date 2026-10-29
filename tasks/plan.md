@@ -1,63 +1,224 @@
-# Implementation Plan: Bubble Analyzer Gas Holdup Workflow
+# 气含率测算升级：分阶段实现规划
 
-## Overview
+日期：2026-10-22。状态：规划完成，算法尚未实现。
 
-Convert the Qt application into a two-tab Bubble Analyzer while preserving the existing Bubble Tracking page and adding an independent Gas Holdup workflow. Both workflows use shared YOLO predictor construction and image-loading modules, while only Bubble Tracking imports tracking code.
+## 目标与交付范围
 
-## Architecture Decisions
+在现有 Gas Holdup 离线图像分析流程中，实现用户选定的三条路线：球形体积法、椭球/轮廓积分法、实验标定模型。每条路线都要具有可解释的计算、可追溯的输出和独立验证记录。
 
-- Keep the loaded tracking central widget intact and host it as the first page of a new `QTabWidget`.
-- Put predictor construction and image discovery/loading in tracker-free shared modules.
-- Model gas-holdup calculations as pure mask operations so ROI, filtering, edge policy, and statistics can be unit tested without YOLO or Qt.
-- Treat gas holdup as the union of accepted segmentation-mask pixels divided by ROI pixels; never use bounding-box area.
-- Report equivalent bubble diameter in pixels because the requested Gas Holdup parameter set has no physical calibration input.
-- Preserve the existing flat tracking state keys and add Gas Holdup settings under a namespaced `gas_holdup` object.
+最终用户可以输入长度标定与通道厚度，选择几何模型，查看二维面积占比和模型估算体积气含率；存在有效实验标定模型时，同时查看标定结果。输出包含方法、单位、测量范围和质量状态，能回溯到原始帧与实例。
 
-## Task List
+本轮交付规划和实施清单。双相机、三维层析、实时部署与完全遮挡气泡的自动恢复作为后续方向；当前实现目标以现有相机的离线分析为主。
 
-### Phase 1: Shared Foundations
+## 已确认条件与当前代码
 
-- [x] Task 1: Extract shared predictor and image I/O modules.
-- [x] Task 2: Add pure gas-holdup mask analysis with ROI and edge policies.
+- 用户已确认：三维气泡流侧视投影，通道厚度已知；实际厚度数值尚未提供。
+- `bubble_analyzer/gas_holdup.py:73` 的 `analyze_masks` 统计 ROI 内掩膜并集，`GasHoldup` 与面积百分比相等；当前会先截断掩膜再计算等效直径。
+- `bubble_analyzer/gas_holdup_workflow.py` 已有长度标定、逐帧批处理、覆盖图、CSV、进度和停止接口；长度标定当前只换算直径。
+- `bubble_analyzer/gas_holdup_qt.py` 管理参数、结果和命名空间内的状态持久化，适合逐阶段接入方法选择。
+- 已有分析、工作流和 Qt 测试；工作流测试会精确断言 CSV 列顺序，新增字段时需要更新兼容契约和对应断言。
+- `Weighted` 当前与 `Include` 数值行为相同。保留其历史面积含义，另行定义体积边界策略。
 
-### Checkpoint: Foundation
+以上代码定位已检查；现有完成记录见 `tasks/todo.md` 的历史部分，历史测试状态不代表本轮重新运行。
 
-- [x] Unit tests prove union-area, minimum-area, ROI, and border handling.
-- [x] Existing tracking imports and tests remain valid.
+## 统一测量约定
 
-### Phase 2: Processing Workflow
+### 1. 区分观测量、几何估计和标定估计
 
-- [x] Task 3: Add folder processing, overlay export, CSV output, progress, and cancellation.
-- [x] Task 4: Add a worker-backed Gas Holdup Qt page with files, parameters, results, and preview.
+- `BubbleAreaRatio` 和历史 `GasHoldup` 保持原有面积百分比含义，避免旧 CSV 使用者误读。界面明确显示“投影面积占比”。
+- 新增 `GeometricGasHoldupPct` 和 `CalibratedGasHoldupPct`，均使用百分数；内部计算使用 0 到 1 的分数，并只在输出处换算。
+- `Method`、`MeasurementScope`、`EstimateStatus`、`QualityReasons` 和 `SchemaVersion` 解释结果。状态至少包括 `not_configured`、`model_estimate`、`partial`、`unavailable`、`out_of_domain`。
+- 无效或缺少配置时输出空数值和原因。合法空掩膜输入在合成测试中可以得到零值；真实帧无检出需要保留检出限制状态，不能据此证明没有气体。
+- `partial` 帧可导出已纳入实例的体积贡献，但完整气含率字段留空；不能把丢弃边界、遮挡或拟合失败实例后的体积和当作完整测量。
 
-### Checkpoint: Processing
+### 2. 固定测量体积与形状假设
 
-- [x] A fake predictor processes an image folder end-to-end.
-- [x] Output contains one overlay and one CSV row per processed image.
+平壁、等厚通道采用 `V_measure = A_ROI_real × L`。若是圆管或视线长度随位置变化，应采用几何路径长度积分，不能用固定厚度代替。
 
-### Phase 3: Application Shell
+已知物理通道厚度不等于全深度均可可靠成像。第一版完整通道估算要求记录全深度成像检查；未检查时标记深度未验证。后续若使用有效光学薄层，必须有可执行的深度选择与相应标定，不能只缩小分母而继续累加全深度投影。
 
-- [x] Task 5: Wrap the existing tracking UI in a Bubble Tracking tab and add Gas Holdup.
-- [x] Task 6: Persist namespaced Gas Holdup state and coordinate shutdown safely.
+采用等比例长度标定 `s` 时，ROI 实际面积为 `A_roi_px × s²`。模型体积按 `s³` 换算，通道厚度使用同一长度单位。标定改变时，分子和分母都要按物理定义更新。
 
-### Checkpoint: Complete
+球形：`d_i = sqrt(4 A_i / π)`，`V_i = π d_i³ / 6`。椭球使用完整轴长：`V_i = π D1_i D2_i D3_i / 6`；扁球候选假设为两个赤道轴相等，且对称轴方向适用。图像长短轴不能在气泡倾斜时无条件当成真实三维轴。
 
-- [x] All automated tests pass.
-- [x] Python compilation succeeds for changed modules.
-- [x] The Qt window opens offscreen with both workflow tabs.
+轮廓积分：在选定对称轴下，`V_i ≈ Σ π w_k² Δh / 4`。它改善轮廓近似，仍依赖轴对称假设；严重不对称气泡应保留模型局限。
 
-## Risks and Mitigations
+### 3. 面积与体积使用不同的边界处理
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Tracking regression from refactor | High | Limit tracking changes to shared imports and run existing tests. |
-| Overlapping instance masks inflate gas holdup | High | Calculate numerator from the union mask, not summed instance areas. |
-| Edge policy ambiguity | Medium | Exclude removes frame-border masks; Include and Weighted retain only observed mask pixels, which is the measurable quantity. |
-| Large TIFF inputs | Medium | Reuse normalized OpenCV/Pillow loading and emit previews at a configurable stride. |
-| UI worker shutdown race | Medium | Use the existing stop-event/QThread pattern for the independent worker. |
+- 面积基线继续使用现有 ROI 截断掩膜和并集。
+- 体积模型从 ROI 截断前的完整帧掩膜提取形状。气泡完整可见但跨 ROI 时，计算重建体积落在 ROI 柱体内的部分，不能把截断面积当完整泡，也不能用面积比例直接冒充体积比例。
+- 图像外被截断、明显遮挡或拟合不可靠的实例保留原因。基础阶段不自动补齐隐藏形状；存在这些实例时输出部分贡献和不完整状态。
+- 独立实例的投影重叠不应从体积和中扣除，但必须检查是否为重复检测；仅可见片段仍然不等于完整实例轮廓。
+- 图像中完全看不见的气泡无法由上述质量指标排除，需通过独立实验验证估计残余漏检偏差。
+- 不使用轨迹寿命或运动筛选后的气泡子集测算完整气含率。
 
-## Open Questions Resolved by Conservative Defaults
+## 实施阶段
 
-- ROI is entered as X, Y, Width, Height; zero width or height extends to the frame boundary.
-- Gas Holdup equals Bubble Area Ratio until a separate calibration model is specified.
-- Average diameter is the mean equivalent-circle diameter in pixels.
+每阶段均包含分析核心、必要的批处理/界面接入和验证，形成可运行的增量。下面的小任务依次执行，各任务约涉及 2–5 个文件；文件名为拟定名称，实施时可按现有结构合并。
+
+### 阶段 0：测量合同与验证基线
+
+**目标：** 提前解决测量范围和数据来源问题，为三种方法建立一致的比较口径。
+
+**任务 P0.1：固定输入与输出合同。** 定义方法枚举、体积配置、结果状态和 CSV 兼容规则；记录通道几何、厚度/单位、长度标定及深度检查。产物放入 `docs/gas_holdup_measurement.md`，后续由模型结构实现。
+
+**任务 P0.2：定义验证数据。** 整理合成圆、椭圆和旋转体轮廓的解析参考；设计真实实验索引，包含 `run_id`、工况、原图路径、采集时间、ROI、参考测量范围、参考窗口、参考气含率及不确定度。保存一组面积基线输出。
+
+**验收：**
+
+- 面积、完整体积估算、部分贡献和标定结果具有明确单位与失败状态。
+- 能区分完整通道与光学薄层，确认恒定厚度模型是否适用。
+- 验证数据能按独立实验批次划分；参考平均值不会被当作每帧瞬时真值。
+
+**验证方式：** 人工核对一份配置与一份参考数据样例；实施启动时在 `hkc` 中运行已有分析和工作流测试并记录基线。
+
+**依赖：** 无。厚度和参考数据未到齐时，可以继续合成验证与配置接口开发。
+
+### 阶段 1：球形体积法，完成首个端到端版本
+
+**目标：** 从相同掩膜同时输出面积基线和球形模型估算，形成最小可运行版本。
+
+**任务 P1.1：几何核心。** 在拟新增 `bubble_analyzer/gas_holdup_models.py` 中实现逐泡等效直径、球体积、测量体积、ROI 内体积积分和质量状态；保留原始掩膜用于形状提取。补充 `test/test_gas_holdup_models.py`，以解析几何而非复制实现验证。
+
+**任务 P1.2：批处理接入。** 扩展 `GasHoldupConfig`、覆盖图与 CSV，追加方法、几何值、测量体积、单位和状态；保留旧列顺序与旧列含义，并更新工作流字段断言。
+
+**任务 P1.3：Qt 接入。** 增加面积/球形选择、通道厚度和深度状态输入，展示“模型估算”与不可用原因；扩展序列化恢复和相关 Qt 测试。旧配置恢复为面积模式，物理厚度不设虚构默认值。
+
+**验收：**
+
+- 解析测试证明逐泡求和、ROI 体积截取、厚度倒数关系和单位换算正确；栅格误差容差由分辨率收敛检查确定。
+- 未配置厚度、深度未验证或存在不可靠实例时，状态明确，不把部分贡献或面积值填入完整体积字段。
+- 假预测器和 Qt 可完整运行一次，旧面积数值与状态文件恢复行为保持兼容。
+
+**验证方式：** 分析/工作流单测、Qt 状态测试、一次覆盖图与 CSV 人工核对。交付可运行的球形对照版本。
+
+**依赖：** 阶段 0 的测量合同。
+
+### 阶段 2：椭球体积法，比较形状假设
+
+**目标：** 为非球形气泡提供可解释的模型，保留球形结果用于对照。
+
+**任务 P2.1：拟合与适用性。** 提取轮廓、椭圆轴长、方向和拟合残差；实现显式第三轴假设及拟合质量门槛。对倾斜、过少轮廓点、明显凹陷或遮挡实例标记适用性。
+
+**任务 P2.2：结果接入。** 将椭球体积及跨 ROI 的体积贡献接入批处理和方法选择；覆盖图显示拟合轮廓与失败实例，并输出逐实例明细供复核。
+
+**任务 P2.3：模型比较。** 在圆、不同轴比椭圆及已知姿态的合成轮廓上对照球形与椭球；对符合扁球假设的样本验证椭球优势，同时记录假设失效案例。
+
+**验收：**
+
+- 给定轴长与第三轴假设时复现解析体积，近球形时与球形基线趋于一致。
+- 比较报告区分拟合误差、三维假设误差与投影姿态误差；不宣称椭球在所有样本上更准确。
+- 椭球模型可在界面运行、恢复配置并导出逐帧和逐实例结果，拟合失败有可追溯状态。
+
+**验证方式：** 几何解析测试、假预测器回放、拟合覆盖图抽查。交付球形/椭球对照版本。
+
+**主要文件：** `gas_holdup_models.py`、`gas_holdup_workflow.py`、`gas_holdup_qt.py` 和对应分析、工作流、Qt 测试；按小任务分批修改。
+
+**依赖：** 阶段 1。
+
+### 阶段 3：轮廓积分法与质量分层
+
+**目标：** 在可接受的轴对称条件下，减少用单一椭圆近似复杂轮廓的误差。
+
+**任务 P3.1：轮廓积分。** 明确对称轴选择、旋转重采样、切片宽度、离散步长和 ROI 体积截取；实现轮廓模型及不适用状态。不把投影中空洞或高光直接解释成气泡内部缺气。
+
+**任务 P3.2：质量诊断。** 统一边界、遮挡嫌疑、拟合残差、轴对称性和清晰度指标，在覆盖图、明细和帧结果中输出原因。指标是诊断依据，不自动转化为“已恢复全部气泡”。
+
+**任务 P3.3：三模型回放。** 增加球形、椭球、轮廓的同输入比较导出；记录几何分析新增耗时，避免为比较重复执行 YOLO。
+
+**验收：**
+
+- 球体、扁球和已知轴对称变形轮廓上的积分结果随步长细化收敛到参考值。
+- 明显不对称、截断和不可可靠分离的样本均有质量状态，不能静默补成完整体积。
+- 同一批真实图片能导出三模型对照、失败原因和覆盖图，完整性受限的帧有明确标记。
+
+**验证方式：** 解析旋转体和步长收敛测试、质量状态测试、固定图像集人工复核。交付三种几何方法和诊断版本。
+
+**主要文件：** 几何模型、工作流、Qt 和各自测试；每个任务控制在约 2–5 个文件。
+
+**依赖：** 阶段 2。真实数据的遮挡补全与时间跟踪恢复暂不作为本阶段的准确性前提。
+
+### 阶段 4：实验标定模型，建立独立数据闭环
+
+**目标：** 用参考实验检验并校正系统偏差，输出与原始几何结果并列的标定值。
+
+**任务 P4.1：参考数据导入与对齐。** 采用明确格式的 CSV 和 JSON 元数据，校验单位、实验批次、ROI 范围和时间窗口。图像特征先聚合到参考测量尺度：全局液位平均值不能直接监督局部瞬时帧；窗口参考只能验证窗口估计。非等间隔帧按采集时间加权，不能使用处理 FPS。
+
+**任务 P4.2：可解释模型。** 第一版使用线性回归/岭回归及少量固定特征，至少比较面积输入和几何输入两个基线；泡径、轴比和质量比例仅在有足够独立样本时加入。使用现有 NumPy/SciPy，暂不新增复杂训练框架。
+
+**任务 P4.3：验证与模型包。** 先按实验批次/工况分组划分训练、调参与最终测试，再拟合缩放和回归；相邻帧不得跨组泄漏。保存系数、特征顺序/单位、适用测量尺度、成像配置、分割模型标识、训练范围和模型版本，使用 JSON 而非可执行序列化。
+
+**任务 P4.4：加载与展示。** 接入 Qt 模型加载和 `CalibratedGasHoldupPct`；窗口级模型输出窗口结果，不冒充逐帧参考精度。特征缺失、配置不匹配或超范围时拒绝预测并保留原因；异常预测不靠静默裁剪至 0–100% 掩盖。若提供预测区间，使用按批次重采样等独立验证，并报告其实际覆盖率。
+
+**验收：**
+
+- 每条训练记录可以追溯到独立参考、测量范围和采集窗口，训练和测试之间无批次泄漏。
+- 模型重载后预测可复现；缺模型、特征不兼容、输入超范围均返回清晰状态。
+- 留出测试报告包括 MAE、RMSE、偏差、有效输出覆盖率及分工况结果，并与未标定基线比较；数据不足时仅交付接口与合成测试，保持“等待实测验证”。
+
+**验证方式：** 对齐/分组测试、已知关系的合成数据测试、模型包往返测试和真实留出实验验证。
+
+**主要文件：** 拟新增 `bubble_analyzer/gas_holdup_calibration.py`、`test/test_gas_holdup_calibration.py`、参考数据说明；后续小任务分别接入工作流和 Qt。
+
+**依赖：** 阶段 3 的稳定特征输出；真实标定效果依赖用户可提供的独立参考数据。
+
+### 阶段 5：实验验收、默认方法与使用文档
+
+**目标：** 用同口径的独立结果决定方法适用范围和默认值。
+
+**任务 P5.1：真实验证矩阵。** 覆盖低/中/高浓度、泡径/轴比变化、边界、遮挡与清晰度差异，优先保证独立重复实验；训练前确定评估指标与业务容许误差，数值结合参考仪器不确定度确定，不预先声称达到某精度。
+
+**任务 P5.2：结果评审。** 在全部合格参考窗口上比较面积基线、球形、椭球、轮廓和标定结果；同时报告拒绝/部分结果占比，不能只挑选成功帧。按批次估计误差区间，保留失败案例和参数敏感性结果。
+
+**任务 P5.3：交付。** 更新 `Readme.md`、测量说明、验证报告和复现配置；在 `hkc` 中完成相关单测、整体回归、Qt 参数恢复/关闭检查及真实图像回放。
+
+**验收：**
+
+- 目标方法在独立留出工况上满足预先确定的精度和覆盖率要求；若未满足，保留可选实验状态并明确限制。
+- 默认方法的选择基于验证结果，旧状态文件、旧面积列和其他工作流通过回归。
+- 文档能解释每个数值的测量范围、假设、模型版本、失败状态和复现方法。
+
+**验证方式：** 保存一套完整输入索引、配置、模型、CSV、覆盖图和验证报告。没有真实参考时不能宣告实验验收完成。
+
+**依赖：** 阶段 4 的实现，以及独立参考实验。
+
+## 实施顺序与里程碑
+
+顺序为：测量合同 → 球形端到端版本 → 椭球端到端版本 → 轮廓与质量比较 → 标定 → 独立实验验收。
+
+- M1（阶段 0–1）：能够演示“相同面积占比，不同泡径/厚度对应不同体积估算”。
+- M2（阶段 2–3）：相同掩膜下完成三种几何模型比较，并解释失败样本。
+- M3（阶段 4）：标定模型能导入、训练、加载和按正确尺度输出。
+- M4（阶段 5）：具备独立实验误差与覆盖率证据，形成默认方法决策。
+
+下一步从 P0.1 与 P0.2 开始，随后实现 P1.1–P1.3。每个检查点以输出和数据判定是否可继续；需要数据时记录具体缺口，不把等待实验混同于算法已通过验证。
+
+## 风险与处理
+
+| 风险 | 处理 |
+| --- | --- |
+| 单视角第三维不确定、倾斜与非轴对称 | 显式记录假设和适用性，比较模型敏感性，用独立实验验证残余偏差。 |
+| 遮挡、漏检、重复检测与边界删样 | 保留原始掩膜、逐实例原因和部分状态；不将部分体积报告为完整气含率。 |
+| 通道厚度与可靠成像范围不一致 | 单独记录成像验证；深度筛选须与测量分母一致。 |
+| 校准参考是全局或时间平均值 | 先对齐空间与采集窗口，不将其复制成局部逐帧真值。 |
+| 标定过拟合或更换了相机/分割模型 | 按批次留出并保存成像配置和模型标识，不匹配或超范围时拒绝应用。 |
+| 新 CSV 字段或默认方法造成误读 | 保留历史列含义与顺序，追加版本和明确命名的新列，旧配置恢复为面积模式。 |
+
+## 验证入口
+
+使用项目 `hkc` Conda 环境。实施时先运行相关测试，再根据新增修改运行整体回归；本轮只写规划，未重新运行算法测试。
+
+```powershell
+conda run -n hkc python -m unittest test.test_gas_holdup test.test_gas_holdup_workflow
+conda run -n hkc python -m unittest discover -s test -p 'test_*.py'
+```
+
+新增模型和标定测试按各阶段加入第一条定向命令；Qt 自动化采用项目现有离屏模式，另外保留可见界面人工检查。
+
+## 待提供的实验信息
+
+1. 通道截面形状、视线方向厚度数值与单位，当前长度标定是否适用于全深度。
+2. 是否有差压、液位膨胀、探针等独立参考值，以及对应位置、时间范围与不确定度。
+3. 可用于分组验证的独立实验批次、连续图片和采集时间/帧率。
+
+上述信息影响真实测量与验收，不妨碍先完成接口、解析几何和合成数据验证。

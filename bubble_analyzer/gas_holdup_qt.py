@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from .gas_holdup import EdgeBubblePolicy, ROI
 from .gas_holdup_workflow import GasHoldupConfig, run_gas_holdup
+from ui_language import LanguageManager
 
 
 class GasHoldupWorker(QObject):
@@ -75,8 +76,9 @@ class GasHoldupWidget(QWidget):
     state_changed = Signal()
     processing_finished = Signal()
 
-    def __init__(self, default_model_path="", default_output_dir="", parent=None):
+    def __init__(self, default_model_path="", default_output_dir="", parent=None, language=None):
         super().__init__(parent)
+        self.language = language or LanguageManager(parent=self)
         self.worker_thread = None
         self.worker = None
         self.preview_pixmap = None
@@ -84,6 +86,7 @@ class GasHoldupWidget(QWidget):
         self._last_auto_csv = ""
 
         self._build_ui()
+        self.language.register(self)
         self._connect_signals()
         self.ensure_defaults(default_model_path, default_output_dir)
 
@@ -449,24 +452,25 @@ class GasHoldupWidget(QWidget):
 
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open segmentation model", "", "PyTorch/ONNX model (*.pt *.onnx);;All files (*.*)"
+            self, self.language.text("Open segmentation model"), "",
+            self.language.text("PyTorch/ONNX model (*.pt *.onnx);;All files (*.*)")
         )
         if path:
             self.model_edit.setText(path)
 
     def _browse_input_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Open input image folder")
+        path = QFileDialog.getExistingDirectory(self, self.language.text("Open input image folder"))
         if path:
             self.input_folder_edit.setText(path)
 
     def _browse_overlay_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Select overlay output folder")
+        path = QFileDialog.getExistingDirectory(self, self.language.text("Select overlay output folder"))
         if path:
             self.overlay_folder_edit.setText(path)
 
     def _browse_output_csv(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Gas Holdup CSV", "", "CSV file (*.csv);;All files (*.*)"
+            self, self.language.text("Save Gas Holdup CSV"), "", self.language.text("CSV file (*.csv);;All files (*.*)")
         )
         if path:
             self.output_csv_edit.setText(path)
@@ -516,7 +520,7 @@ class GasHoldupWidget(QWidget):
         try:
             config = self._build_config()
         except Exception as exc:
-            QMessageBox.critical(self, "Invalid parameters", str(exc))
+            QMessageBox.critical(self, self.language.text("Invalid parameters"), self.language.text(exc))
             return
 
         self._set_running(True)
@@ -538,7 +542,7 @@ class GasHoldupWidget(QWidget):
     def stop_processing(self):
         if self.worker is not None:
             self.worker.stop()
-            self.status_label.setText("Stopping...")
+            self.language.set_text(self.status_label, "Stopping...")
 
     def is_running(self):
         return self.worker_thread is not None and self.worker_thread.isRunning()
@@ -550,7 +554,7 @@ class GasHoldupWidget(QWidget):
     def _set_running(self, running):
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
-        self.status_label.setText("Processing..." if running else "Ready")
+        self.language.set_text(self.status_label, "Processing..." if running else "Ready")
         if not running:
             self.progress_bar.reset()
 
@@ -583,22 +587,24 @@ class GasHoldupWidget(QWidget):
         self._set_running(False)
         self.worker = None
         status = "Stopped." if summary.get("stopped") else "Completed."
-        self.status_label.setText(status)
+        self.language.set_text(self.status_label, status)
         self.progress_label.setText(
             f"{summary.get('processed_frames', 0)}/{summary.get('total_frames', 0)}"
         )
         QMessageBox.information(
             self,
-            "Gas Holdup finished",
-            f"{status}\n\nOverlay folder:\n{summary.get('overlay_folder', '')}\n\n"
-            f"CSV:\n{summary.get('csv_path', '')}",
+            self.language.text("Gas Holdup finished"),
+            self.language.text("{status}\n\nOverlay folder:\n{folder}\n\nCSV:\n{csv}").format(
+                status=self.language.text(status), folder=summary.get("overlay_folder", ""),
+                csv=summary.get("csv_path", ""),
+            ),
         )
 
     def _handle_error(self, error_message):
         self._set_running(False)
         self.worker = None
-        self.status_label.setText("Error")
-        QMessageBox.critical(self, "Gas Holdup error", error_message)
+        self.language.set_text(self.status_label, "Error")
+        QMessageBox.critical(self, self.language.text("Gas Holdup error"), self.language.text(error_message))
 
     def _update_preview(self, frame_bgr):
         max_width = max(self.preview_label.width() - 8, 320)
@@ -621,4 +627,5 @@ class GasHoldupWidget(QWidget):
             QImage.Format_RGB888,
         )
         self.preview_pixmap = QPixmap.fromImage(image)
+        self.language.forget_text(self.preview_label)
         self.preview_label.setPixmap(self.preview_pixmap)

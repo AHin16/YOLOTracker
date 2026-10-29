@@ -2,14 +2,17 @@
 
 面向气泡图像与视频的桌面分析工具，使用 **PySide6 / Qt、Ultralytics YOLO 实例分割和 BoT-SORT / ByteTrack**，提供气泡跟踪、运动测量与基于图像的气含率分析。
 
-当前主入口为 `main.py`，启动后包含两个独立工作流：
+当前主入口为 `main.py`，启动后包含三个独立工作流：
 
 | 工作流 | 输入 | 主要功能 | 输出 |
 | --- | --- | --- | --- |
 | **Bubble Tracking** | 视频或图像序列 | 实例分割、跨帧 ID、轨迹、速度、面积、等效直径与上升运动分析 | 标注 MP4、运动 CSV、轨迹 TXT |
 | **Gas Holdup** | 图像文件夹 | ROI 内掩膜并集面积、气泡数量、二维面积占比、平均等效直径 | 每帧覆盖图 PNG、统计 CSV |
+| **流态安全预警** | 正常基线与待测视频 / 图像序列 | 出现量、大气泡比例和运动状态的持续异常判定、事件回看 | 基线 JSON、逐帧 / 运动 / 窗口 CSV、事件记录及覆盖图 |
 
-两者共用 YOLO 推理和图像读取模块；Gas Holdup 不依赖跟踪 ID、轨迹寿命或运动过滤结果。
+这些工作流共用 YOLO 推理和图像读取模块；Gas Holdup 不依赖跟踪 ID、轨迹寿命或运动过滤结果。
+
+“流态安全预警”位于独立的 `flow_warning/` 模块，使用自己的配置、掩膜统计、几何关联和判定流程。原两个页面的算法与导出格式保持原样。选择正常基线、待测来源和输出目录，填写实际采集帧率、标定与 ROI，再勾选采集时间确认并开始分析。正常基线至少需要三个完整时间窗口；样本不足时对应方向显示“数据不足”。拖动回放滑块或点击事件可查看证据帧。操作、指标口径和阈值说明见 [流态安全预警说明](docs/flow_warning.md)。
 
 ## 快速开始
 
@@ -58,6 +61,12 @@ python main.py
 ```
 
 Windows 的 `START.bat` 当前写有本机 Conda 路径 `C:\Fluids\miniconda3\condabin\conda.bat`。在其他电脑使用前需修改该路径，或直接使用上述命令。
+
+### 4. 切换界面语言 / Interface Language
+
+窗口右上角的 **语言 / Language** 下拉框可即时切换 **简体中文** 与 **English**，首次启动默认为简体中文。三个工作流的页签、按钮、参数说明、状态、提示框、预警事件和回放提示会同步切换，已填写参数、正在进行的分析、预览与事件记录会保留。选择会保存在项目的 `.bubble_tracker_ui_state.json` 中，下次启动自动恢复；旧配置仍可读取。
+
+Use **Language** in the upper-right corner to switch between **简体中文** and **English** immediately. Your language choice is remembered across launches. Switching preserves inputs, processing progress, previews, and warning events. Model and tracker names, physical units, file paths, and export field names retain their original values. The bilingual text catalog is `translations/zh_CN.json`.
 
 ## Bubble Tracking：跟踪与运动分析
 
@@ -271,7 +280,7 @@ git ls-files -ci --exclude-standard
 
 重复使用相同输出文件名会覆盖已有结果，建议为不同实验指定独立输出目录。
 
-定量结果依赖模型分割质量、图像尺度、标定和采样时间。跟踪页缺少匹配分割轮廓时，中心与面积可能回退到检测框估计；Gas Holdup 则始终基于掩膜。两种流程的面积与样本选择口径不同，不能直接混作同一统计量。当前以分析与结果导出为主，尚未实现安全预警模块；性能与精度需结合具体模型、设备和实验数据评估。
+定量结果依赖模型分割质量、图像尺度、标定和采样时间。跟踪页缺少匹配分割轮廓时，中心与面积可能回退到检测框估计；Gas Holdup 则始终基于掩膜。两种流程的面积与样本选择口径不同，不能直接混作同一统计量。流态预警为可解释的离线异常检测，阈值尚需实验验证；性能与精度需结合具体模型、设备和实验数据评估。
 
 ## 致谢与许可
 

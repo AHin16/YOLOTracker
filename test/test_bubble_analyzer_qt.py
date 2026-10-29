@@ -19,6 +19,13 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        state_patch = patch.object(bubble_tracker_ui_qt, "UI_STATE_PATH", os.path.join(temporary.name, "state.json"))
+        state_patch.start()
+        self.addCleanup(state_patch.stop)
+
     def test_hosts_tracking_and_gas_holdup_as_independent_tabs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "ui-state.json")
@@ -28,9 +35,9 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
                 controller = bubble_tracker_ui_qt.BubbleTrackerQt()
 
             tabs = controller.workflow_tabs
-            self.assertEqual(tabs.count(), 2)
-            self.assertEqual(tabs.tabText(0), "Bubble Tracking")
-            self.assertEqual(tabs.tabText(1), "Gas Holdup")
+            self.assertEqual(tabs.count(), 3)
+            self.assertEqual(tabs.tabText(0), "气泡跟踪")
+            self.assertEqual(tabs.tabText(1), "气含率")
             self.assertIsNotNone(tabs.widget(0).findChild(QPushButton, "startBtn"))
             self.assertIs(tabs.widget(1), controller.gas_holdup_widget)
             controller.window.close()

@@ -9,7 +9,7 @@ import traceback
 import cv2
 import numpy as np
 
-from PySide6.QtCore import QObject, QThread, Signal, QEvent, QFile
+from PySide6.QtCore import QObject, QThread, Signal, QEvent, QFile, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,14 +18,18 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QLineEdit,
+    QLabel,
+    QHBoxLayout,
     QMainWindow,
     QMessageBox,
     QSpinBox,
     QTabWidget,
+    QWidget,
 )
 from PySide6.QtUiTools import QUiLoader
 
 from bubble_analyzer.gas_holdup_qt import GasHoldupWidget
+from flow_warning.qt import FlowWarningWidget
 from demo_yolo11 import (
     DEFAULT_IMAGE_DIR,
     DEFAULT_OUTPUT_DIR,
@@ -34,6 +38,7 @@ from demo_yolo11 import (
     main as run_tracker,
 )
 from ui_formatters import format_frame_latency_ms, format_processing_fps
+from ui_language import LanguageManager
 
 ROOT_DIR = osp.abspath(osp.dirname(__file__))
 UI_STATE_PATH = osp.join(ROOT_DIR, ".bubble_tracker_ui_state.json")
@@ -118,14 +123,38 @@ class BubbleTrackerQt(QObject):
         self.window = loader.load(ui_file)
         ui_file.close()
 
+        self.language = LanguageManager(parent=self)
+        self._restoring_state = True
+        self._log_messages = []
+
         tracking_page = self.window.takeCentralWidget()
         self.workflow_tabs = QTabWidget(self.window)
         self.workflow_tabs.setObjectName("workflowTabs")
-        self.gas_holdup_widget = GasHoldupWidget()
+        self.gas_holdup_widget = GasHoldupWidget(language=self.language)
+        self.flow_warning_widget = FlowWarningWidget(language=self.language)
         self.workflow_tabs.addTab(tracking_page, "Bubble Tracking")
         self.workflow_tabs.addTab(self.gas_holdup_widget, "Gas Holdup")
+        self.workflow_tabs.addTab(self.flow_warning_widget, "流态安全预警")
         self.window.setCentralWidget(self.workflow_tabs)
         self.window.setWindowTitle("Bubble Analyzer")
+        language_panel = QWidget()
+        language_layout = QHBoxLayout(language_panel)
+        language_layout.setContentsMargins(8, 0, 8, 0)
+        language_label = QLabel("Language")
+        self.language_combo = QComboBox()
+        self.language_combo.setObjectName("languageCombo")
+        self.language_combo.addItem("简体中文", "zh_CN")
+        self.language_combo.addItem("English", "en")
+        self.language_combo.setAccessibleName("Interface language")
+        self.language_combo.setToolTip("Switch interface language immediately; your selection is saved.")
+        language_label.setBuddy(self.language_combo)
+        language_layout.addWidget(language_label)
+        language_layout.addWidget(self.language_combo)
+        self.workflow_tabs.setCornerWidget(language_panel, Qt.TopRightCorner)
+        self.language.register(self.window)
+        self.language.set_property(self.window, "windowTitle", "Bubble Analyzer")
+        self.language.changed.connect(self._refresh_language)
+        self.language_combo.currentIndexChanged.connect(self._change_language)
 
         self.worker_thread = None
         self.worker = None
@@ -142,8 +171,25 @@ class BubbleTrackerQt(QObject):
             self.window.modelEdit.text().strip(),
             self.window.outputDirEdit.text().strip() or DEFAULT_OUTPUT_DIR,
         )
+        self.flow_warning_widget.ensure_defaults(
+            self.window.modelEdit.text().strip(),
+            self.window.outputDirEdit.text().strip() or DEFAULT_OUTPUT_DIR,
+        )
+        self._restoring_state = False
+        self._refresh_language()
 
         self.window.show()
+
+    def _change_language(self):
+        self.language.set_language(self.language_combo.currentData())
+        self._save_persisted_state()
+
+    def _refresh_language(self, *_args):
+        blocked = self.language_combo.blockSignals(True)
+        self.language_combo.setCurrentIndex(self.language_combo.findData(self.language.language))
+        self.language_combo.blockSignals(blocked)
+        self.window.logsText.setPlainText("\n".join(self.language.text(message) for message in self._log_messages))
+        self.window.logsText.ensureCursorVisible()
 
     # ---- Event filter (for close event) --------------------------------------
 
@@ -152,14 +198,15 @@ class BubbleTrackerQt(QObject):
             self._save_persisted_state()
             tracker_running = self.worker_thread is not None and self.worker_thread.isRunning()
             gas_holdup_running = self.gas_holdup_widget.is_running()
-            if tracker_running or gas_holdup_running:
+            flow_warning_running = self.flow_warning_widget.is_running()
+            if tracker_running or gas_holdup_running or flow_warning_running:
                 if self._pending_close:
                     event.ignore()
                     return True
                 reply = QMessageBox.question(
                     self.window,
-                    "Quit",
-                    "Processing is still running. Stop and quit?",
+                    self.language.text("Quit"),
+                    self.language.text("Processing is still running. Stop and quit?"),
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
                 )
@@ -171,6 +218,8 @@ class BubbleTrackerQt(QObject):
                     self._stop_processing()
                 if gas_holdup_running:
                     self.gas_holdup_widget.stop_processing()
+                if flow_warning_running:
+                    self.flow_warning_widget.stop_processing()
                 event.ignore()
                 return True
             event.accept()
@@ -208,6 +257,8 @@ class BubbleTrackerQt(QObject):
                 sig.connect(self._save_persisted_state)
         self.gas_holdup_widget.state_changed.connect(self._save_persisted_state)
         self.gas_holdup_widget.processing_finished.connect(self._close_when_workers_finish)
+        self.flow_warning_widget.state_changed.connect(self._save_persisted_state)
+        self.flow_warning_widget.processing_finished.connect(self._close_when_workers_finish)
 
     # ---- State persistence ---------------------------------------------------
 
@@ -231,7 +282,7 @@ class BubbleTrackerQt(QObject):
         if isinstance(widget, QLineEdit):
             return widget.text()
         if isinstance(widget, QComboBox):
-            return widget.currentText()
+            return widget.currentData() if widget.currentData() is not None else widget.currentText()
         if isinstance(widget, QCheckBox):
             return widget.isChecked()
         if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
@@ -243,7 +294,9 @@ class BubbleTrackerQt(QObject):
         if isinstance(widget, QLineEdit):
             widget.setText(str(value))
         elif isinstance(widget, QComboBox):
-            idx = widget.findText(str(value))
+            idx = widget.findData(value)
+            if idx < 0:
+                idx = widget.findText(str(value))
             if idx >= 0:
                 widget.setCurrentIndex(idx)
         elif isinstance(widget, QCheckBox):
@@ -260,9 +313,13 @@ class BubbleTrackerQt(QObject):
             key = _WIDGET_TO_STATE_KEY.get(obj_name, obj_name)
             state[key] = self._widget_value(widget)
         state["gas_holdup"] = self.gas_holdup_widget.serialize_state()
+        state["flow_warning"] = self.flow_warning_widget.serialize_state()
+        state["language"] = self.language.language
         return state
 
     def _save_persisted_state(self, *_args):
+        if self._restoring_state:
+            return
         try:
             with open(UI_STATE_PATH, "w", encoding="utf-8") as file:
                 json.dump(self._serialize_state(), file, ensure_ascii=False, indent=2)
@@ -281,8 +338,10 @@ class BubbleTrackerQt(QObject):
             return
 
         gas_holdup_state = state.get("gas_holdup", {})
+        flow_warning_state = state.get("flow_warning", {})
+        self.language.set_language(state.get("language", "zh_CN"))
         for key, value in state.items():
-            if key == "gas_holdup":
+            if key in ("gas_holdup", "flow_warning", "language"):
                 continue
             if value is None or (isinstance(value, str) and not value.strip()):
                 continue
@@ -291,22 +350,23 @@ class BubbleTrackerQt(QObject):
             if widget is not None:
                 self._set_widget_value(widget, value)
         self.gas_holdup_widget.restore_state(gas_holdup_state)
+        self.flow_warning_widget.restore_state(flow_warning_state)
 
     # ---- File panel browse handlers ------------------------------------------
 
     def _browse_model(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self.window,
-            "Open model",
+            self.language.text("Open model"),
             "",
-            "PyTorch/ONNX model (*.pt *.onnx);;All files (*.*)",
+            self.language.text("PyTorch/ONNX model (*.pt *.onnx);;All files (*.*)"),
         )
         if file_path:
             self.window.modelEdit.setText(file_path)
 
     def _browse_input_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self.window, "Open input", "", INPUT_FILETYPES
+            self.window, self.language.text("Open input"), "", self.language.text(INPUT_FILETYPES)
         )
         if file_path:
             self.window.inputEdit.setText(file_path)
@@ -314,27 +374,27 @@ class BubbleTrackerQt(QObject):
             self._load_video_fps(file_path)
 
     def _browse_input_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(self.window, "Open image folder")
+        dir_path = QFileDialog.getExistingDirectory(self.window, self.language.text("Open image folder"))
         if dir_path:
             self.window.inputEdit.setText(dir_path)
             self._update_form_auto_outputs()
 
     def _browse_output_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(self.window, "Open output folder")
+        dir_path = QFileDialog.getExistingDirectory(self.window, self.language.text("Open output folder"))
         if dir_path:
             self.window.outputDirEdit.setText(dir_path)
             self._update_form_auto_outputs()
 
     def _browse_output_video(self):
         file_path, _ = QFileDialog.getSaveFileName(
-            self.window, "Save output video", "", "MP4 video (*.mp4);;All files (*.*)"
+            self.window, self.language.text("Save output video"), "", self.language.text("MP4 video (*.mp4);;All files (*.*)")
         )
         if file_path:
             self.window.outputVideoEdit.setText(file_path)
 
     def _browse_output_csv(self):
         file_path, _ = QFileDialog.getSaveFileName(
-            self.window, "Save output CSV", "", "CSV file (*.csv);;All files (*.*)"
+            self.window, self.language.text("Save output CSV"), "", self.language.text("CSV file (*.csv);;All files (*.*)")
         )
         if file_path:
             self.window.outputCsvEdit.setText(file_path)
@@ -387,9 +447,9 @@ class BubbleTrackerQt(QObject):
         output_csv = w.outputCsvEdit.text().strip()
 
         if not model_path or not osp.isfile(model_path):
-            raise ValueError("Model file does not exist.")
+            raise ValueError(self.language.text("Model file does not exist."))
         if not input_path or (not osp.isfile(input_path) and not osp.isdir(input_path)):
-            raise ValueError("Input path does not exist.")
+            raise ValueError(self.language.text("Input path does not exist."))
 
         args = Args()
         args.model_path = model_path
@@ -401,8 +461,8 @@ class BubbleTrackerQt(QObject):
             output_dir,
             f"{osp.splitext(osp.basename(output_video))[0] or 'bubble_tracking'}_tracks.txt",
         )
-        args.tracker_type = w.trackerCombo.currentText().strip()
-        args.device = w.deviceCombo.currentText().strip() or "auto"
+        args.tracker_type = w.trackerCombo.currentData()
+        args.device = w.deviceCombo.currentData() or "auto"
         args.predict_conf = float(w.confidenceSpin.value())
         args.predict_iou = float(w.nmsIouSpin.value())
         args.mask_match_iou = float(w.maskMatchIouSpin.value())
@@ -411,13 +471,13 @@ class BubbleTrackerQt(QObject):
 
         frame_rate = float(w.fpsSpin.value())
         if frame_rate <= 0:
-            raise ValueError("FPS must be greater than 0.")
+            raise ValueError(self.language.text("FPS must be greater than 0."))
         min_track_frames = int(w.minTrackFramesSpin.value())
         if min_track_frames < 1:
-            raise ValueError("Min Track Frames must be at least 1.")
+            raise ValueError(self.language.text("Min Track Frames must be at least 1."))
         max_turn_angle = float(w.maxTurnAngleSpin.value())
         if max_turn_angle <= 0 or max_turn_angle > 180:
-            raise ValueError("Max Turn Angle must be in the range (0, 180].")
+            raise ValueError(self.language.text("Max Turn Angle must be in the range (0, 180]."))
 
         args.fps = frame_rate
         args.frame_interval_seconds = 1.0 / frame_rate
@@ -441,7 +501,7 @@ class BubbleTrackerQt(QObject):
         try:
             args = self._build_args()
         except Exception as exc:
-            QMessageBox.critical(self.window, "Invalid parameters", str(exc))
+            QMessageBox.critical(self.window, self.language.text("Invalid parameters"), self.language.text(exc))
             return
 
         self._set_running(True)
@@ -469,7 +529,7 @@ class BubbleTrackerQt(QObject):
     def _stop_processing(self):
         if self.worker is not None:
             self.worker.stop()
-            self.window.statusLabel.setText("Stopping...")
+            self.language.set_text(self.window.statusLabel, "Stopping...")
             self._append_log("Stop requested. Waiting for current frame to finish.")
 
     def _on_thread_finished(self):
@@ -478,7 +538,8 @@ class BubbleTrackerQt(QObject):
 
     def _close_when_workers_finish(self):
         tracker_running = self.worker_thread is not None and self.worker_thread.isRunning()
-        if self._pending_close and not tracker_running and not self.gas_holdup_widget.is_running():
+        if (self._pending_close and not tracker_running and not self.gas_holdup_widget.is_running()
+                and not self.flow_warning_widget.is_running()):
             self._pending_close = False
             self.window.close()
 
@@ -486,13 +547,13 @@ class BubbleTrackerQt(QObject):
         if running:
             self.window.startBtn.setEnabled(False)
             self.window.stopBtn.setEnabled(True)
-            self.window.statusLabel.setText("Processing...")
-            self.window.processingFpsLabel.setText(format_processing_fps(None))
-            self.window.frameLatencyLabel.setText(format_frame_latency_ms(None))
+            self.language.set_text(self.window.statusLabel, "Processing...")
+            self.language.set_text(self.window.processingFpsLabel, format_processing_fps(None))
+            self.language.set_text(self.window.frameLatencyLabel, format_frame_latency_ms(None))
         else:
             self.window.startBtn.setEnabled(True)
             self.window.stopBtn.setEnabled(False)
-            self.window.statusLabel.setText("Ready")
+            self.language.set_text(self.window.statusLabel, "Ready")
             self.window.progressBar.reset()
 
     # ---- Worker signal handlers ----------------------------------------------
@@ -511,17 +572,17 @@ class BubbleTrackerQt(QObject):
         w.avgAreaValue.setText(f"{metrics.get('avg_area_px', 0.0):.2f} px^2")
         w.uniqueTracksValue.setText(str(metrics.get("unique_tracks", 0)))
         w.csvSamplesValue.setText(str(metrics.get("samples_written", 0)))
-        w.processingFpsLabel.setText(format_processing_fps(metrics.get("fps")))
-        w.frameLatencyLabel.setText(format_frame_latency_ms(metrics.get("frame_latency_ms")))
+        self.language.set_text(w.processingFpsLabel, format_processing_fps(metrics.get("fps")))
+        self.language.set_text(w.frameLatencyLabel, format_frame_latency_ms(metrics.get("frame_latency_ms")))
 
         if total_frames:
             w.progressBar.setMaximum(total_frames)
             w.progressBar.setValue(frame_id)
-            w.progressLabel.setText(f"{frame_id}/{total_frames}")
+            self.language.set_text(w.progressLabel, f"{frame_id}/{total_frames}")
         else:
             w.progressBar.setMaximum(max(frame_id, 1))
             w.progressBar.setValue(frame_id)
-            w.progressLabel.setText(f"{frame_id} frames")
+            self.language.set_text(w.progressLabel, "{count} frames", count=frame_id)
 
         frame = payload.get("preview_frame")
         if frame is not None:
@@ -533,26 +594,27 @@ class BubbleTrackerQt(QObject):
 
         stopped = summary.get("stopped", False)
         status_text = "Stopped." if stopped else "Completed."
-        self.window.statusLabel.setText(status_text)
-        self.window.progressLabel.setText(f"{summary.get('processed_frames', 0)} frames")
+        self.language.set_text(self.window.statusLabel, status_text)
+        self.language.set_text(self.window.progressLabel, "{count} frames", count=summary.get("processed_frames", 0))
         self._append_log(status_text)
         self._append_log(f"Output video: {summary.get('video_path', '')}")
         self._append_log(f"Motion CSV: {summary.get('motion_csv_path', '')}")
         QMessageBox.information(
             self.window,
-            "Processing finished",
-            f"{status_text}\n\n"
-            f"Output video:\n{summary.get('video_path', '')}\n\n"
-            f"Motion CSV:\n{summary.get('motion_csv_path', '')}",
+            self.language.text("Processing finished"),
+            self.language.text("{status}\n\nOutput video:\n{video}\n\nMotion CSV:\n{csv}").format(
+                status=self.language.text(status_text), video=summary.get("video_path", ""),
+                csv=summary.get("motion_csv_path", ""),
+            ),
         )
 
     def _handle_error(self, error_message):
         self._set_running(False)
         self.worker = None
-        self.window.statusLabel.setText("Error")
+        self.language.set_text(self.window.statusLabel, "Error")
         self._append_log("Error:")
         self._append_log(error_message)
-        QMessageBox.critical(self.window, "Error", error_message)
+        QMessageBox.critical(self.window, self.language.text("Error"), self.language.text(error_message))
 
     # ---- Preview -------------------------------------------------------------
 
@@ -574,12 +636,14 @@ class BubbleTrackerQt(QObject):
         bytes_per_line = ch * w
         qimg = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
         self.preview_pixmap = QPixmap.fromImage(qimg)
+        self.language.forget_text(label)
         label.setPixmap(self.preview_pixmap)
 
     # ---- Logging -------------------------------------------------------------
 
     def _append_log(self, message):
-        self.window.logsText.append(message)
+        self._log_messages.append(message)
+        self.window.logsText.append(self.language.text(message))
 
 
 def main():
