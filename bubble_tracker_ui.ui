@@ -414,7 +414,7 @@
         <item row="2" column="0">
          <widget class="QLabel" name="avgSpeedLabel">
           <property name="text">
-           <string>Avg Speed</string>
+           <string>Task Avg Speed</string>
           </property>
          </widget>
         </item>
@@ -431,7 +431,7 @@
         <item row="3" column="0">
          <widget class="QLabel" name="maxSpeedLabel">
           <property name="text">
-           <string>Max Speed</string>
+           <string>Task Max Speed</string>
           </property>
          </widget>
         </item>
@@ -448,7 +448,7 @@
         <item row="4" column="0">
          <widget class="QLabel" name="avgAreaLabel">
           <property name="text">
-           <string>Avg Area</string>
+           <string>Task Avg Area</string>
           </property>
          </widget>
         </item>

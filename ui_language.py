@@ -17,7 +17,7 @@ def _template_pattern(template):
         if re.fullmatch(r"\{[a-z_]+\}", part):
             name = part[1:-1]
             value_pattern = r"[^；\n]+?" if name == "metric" else r".+?"
-            if name in ("lower", "upper", "bound") or (name == "value" and "{bound}" in template):
+            if name in ("lower", "upper", "bound", "time") or (name == "value" and "{bound}" in template):
                 value_pattern = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?"
             pattern_parts.append(f"(?P<{name}>{value_pattern})")
         else:
@@ -62,7 +62,8 @@ class LanguageManager(QObject):
         for separator, localized_separator in (("\n", "\n"), ("；", "; ")):
             if separator in source:
                 joiner = localized_separator if self.language == "en" else separator
-                return joiner.join(self.text(part) for part in source.split(separator))
+                # Keep the remaining lines together so multi-line templates still match.
+                return joiner.join(self.text(part) for part in source.split(separator, 1))
         return source
 
     def set_text(self, widget, source, **values):

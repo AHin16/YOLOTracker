@@ -42,6 +42,59 @@ class BubbleAnalyzerQtTest(unittest.TestCase):
             self.assertIs(tabs.widget(1), controller.gas_holdup_widget)
             controller.window.close()
 
+    def test_tracking_task_statistic_labels_follow_language(self):
+        with patch.object(QMainWindow, "show"):
+            controller = bubble_tracker_ui_qt.BubbleTrackerQt()
+        self.addCleanup(controller.window.close)
+
+        self.assertEqual(controller.window.avgSpeedLabel.text(), "本次平均速度")
+        self.assertEqual(controller.window.maxSpeedLabel.text(), "本次最大速度")
+        self.assertEqual(controller.window.avgAreaLabel.text(), "本次平均面积")
+        controller.language.set_language("en")
+        self.assertEqual(controller.window.avgSpeedLabel.text(), "Task Avg Speed")
+        self.assertEqual(controller.window.maxSpeedLabel.text(), "Task Max Speed")
+        self.assertEqual(controller.window.avgAreaLabel.text(), "Task Avg Area")
+
+    def test_tracking_statistics_reset_when_new_task_starts(self):
+        with patch.object(QMainWindow, "show"):
+            controller = bubble_tracker_ui_qt.BubbleTrackerQt()
+        self.addCleanup(controller.window.close)
+        controller._handle_progress({"frame_id": 2, "metrics": {
+            "avg_speed": 6.0, "max_speed": 8.0, "avg_area_px": 150.0,
+            "distance_unit": "mm",
+        }})
+        controller._set_running(False)
+        self.assertEqual(controller.window.avgSpeedValue.text(), "6.00 mm/s")
+        self.assertEqual(controller.window.maxSpeedValue.text(), "8.00 mm/s")
+        self.assertEqual(controller.window.avgAreaValue.text(), "150.00 px^2")
+
+        controller.window.distanceUnitEdit.setText("cm")
+        controller._set_running(True)
+
+        self.assertEqual(controller.window.avgSpeedValue.text(), "0.00 cm/s")
+        self.assertEqual(controller.window.maxSpeedValue.text(), "0.00 cm/s")
+        self.assertEqual(controller.window.avgAreaValue.text(), "0.00 px^2")
+
+    def test_tracking_completion_displays_final_statistics_after_preview(self):
+        with patch.object(QMainWindow, "show"):
+            controller = bubble_tracker_ui_qt.BubbleTrackerQt()
+        self.addCleanup(controller.window.close)
+        controller._handle_progress({"frame_id": 2, "metrics": {
+            "avg_speed": 6.0, "max_speed": 8.0, "avg_area_px": 150.0,
+            "distance_unit": "mm",
+        }})
+
+        # The last processed frame may not have emitted a preview before stopping.
+        with patch.object(bubble_tracker_ui_qt.QMessageBox, "information"):
+            controller._handle_done({
+                "stopped": True, "processed_frames": 3, "distance_unit": "mm",
+                "avg_speed": 14.0 / 3.0, "max_speed": 8.0, "avg_area_px": 300.0,
+            })
+
+        self.assertEqual(controller.window.avgSpeedValue.text(), "4.67 mm/s")
+        self.assertEqual(controller.window.maxSpeedValue.text(), "8.00 mm/s")
+        self.assertEqual(controller.window.avgAreaValue.text(), "300.00 px^2")
+
     def test_serializes_gas_holdup_settings_in_a_namespace(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "ui-state.json")

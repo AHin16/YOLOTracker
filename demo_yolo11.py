@@ -388,6 +388,10 @@ class MotionAnalyzer:
         self.csv_rows: List[Dict[str, Any]] = []
         self.accepted_track_ids = set()
         self.area_column_name = self._build_area_column_name()
+        self.task_observation_count = 0
+        self.task_speed_sum = 0.0
+        self.task_area_sum = 0.0
+        self.task_max_speed = 0.0
 
     def update(self, frame_id, frame_tracks):
         if not self.enabled:
@@ -561,21 +565,29 @@ class MotionAnalyzer:
 
     def _build_metrics(self, frame_id, frame_tracks):
         visible_tracks = [track for track in frame_tracks if track.get("is_visible", True)]
-        speeds = [float(track.get("speed_real_per_s", 0.0)) for track in visible_tracks]
-        areas = [float(track.get("area_px", 0.0)) for track in visible_tracks]
-        avg_speed = float(np.mean(speeds)) if speeds else 0.0
-        max_speed = float(np.max(speeds)) if speeds else 0.0
-        avg_area = float(np.mean(areas)) if areas else 0.0
+        # Accumulate every processed frame, independently of the preview stride.
+        for track in visible_tracks:
+            speed = float(track.get("speed_real_per_s", 0.0))
+            self.task_observation_count += 1
+            self.task_speed_sum += speed
+            self.task_area_sum += float(track.get("area_px", 0.0))
+            self.task_max_speed = max(self.task_max_speed, speed)
 
         return {
             "frame_id": frame_id,
             "tracked_count": len(visible_tracks),
-            "avg_speed": avg_speed,
-            "max_speed": max_speed,
-            "avg_area_px": avg_area,
+            **self._task_metrics(),
             "distance_unit": self.distance_unit,
             "samples_written": len(self.csv_rows),
             "unique_tracks": len(self.accepted_track_ids),
+        }
+
+    def _task_metrics(self):
+        count = self.task_observation_count
+        return {
+            "avg_speed": self.task_speed_sum / count if count else 0.0,
+            "max_speed": self.task_max_speed,
+            "avg_area_px": self.task_area_sum / count if count else 0.0,
         }
 
     def _build_area_column_name(self):
@@ -616,6 +628,7 @@ class MotionAnalyzer:
 
     def summary(self):
         return {
+            **self._task_metrics(),
             "motion_samples": len(self.csv_rows),
             "unique_tracks": len(self.accepted_track_ids),
             "distance_unit": self.distance_unit,

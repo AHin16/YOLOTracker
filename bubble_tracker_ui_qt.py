@@ -545,6 +545,9 @@ class BubbleTrackerQt(QObject):
 
     def _set_running(self, running):
         if running:
+            self._update_task_statistics({
+                "distance_unit": self.window.distanceUnitEdit.text().strip() or "unit",
+            })
             self.window.startBtn.setEnabled(False)
             self.window.stopBtn.setEnabled(True)
             self.language.set_text(self.window.statusLabel, "Processing...")
@@ -558,18 +561,21 @@ class BubbleTrackerQt(QObject):
 
     # ---- Worker signal handlers ----------------------------------------------
 
+    def _update_task_statistics(self, metrics):
+        distance_unit = metrics.get("distance_unit", "unit")
+        self.window.avgSpeedValue.setText(f"{metrics.get('avg_speed', 0.0):.2f} {distance_unit}/s")
+        self.window.maxSpeedValue.setText(f"{metrics.get('max_speed', 0.0):.2f} {distance_unit}/s")
+        self.window.avgAreaValue.setText(f"{metrics.get('avg_area_px', 0.0):.2f} px^2")
+
     def _handle_progress(self, payload):
         metrics = payload.get("metrics", {})
         frame_id = payload.get("frame_id", 0)
         total_frames = payload.get("total_frames")
-        distance_unit = metrics.get("distance_unit", "unit")
 
         w = self.window
         w.frameValue.setText(str(frame_id))
         w.trackedValue.setText(str(metrics.get("tracked_count", 0)))
-        w.avgSpeedValue.setText(f"{metrics.get('avg_speed', 0.0):.2f} {distance_unit}/s")
-        w.maxSpeedValue.setText(f"{metrics.get('max_speed', 0.0):.2f} {distance_unit}/s")
-        w.avgAreaValue.setText(f"{metrics.get('avg_area_px', 0.0):.2f} px^2")
+        self._update_task_statistics(metrics)
         w.uniqueTracksValue.setText(str(metrics.get("unique_tracks", 0)))
         w.csvSamplesValue.setText(str(metrics.get("samples_written", 0)))
         self.language.set_text(w.processingFpsLabel, format_processing_fps(metrics.get("fps")))
@@ -590,6 +596,7 @@ class BubbleTrackerQt(QObject):
 
     def _handle_done(self, summary):
         self._set_running(False)
+        self._update_task_statistics(summary)
         self.worker = None
 
         stopped = summary.get("stopped", False)
